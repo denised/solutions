@@ -1,0 +1,165 @@
+# Query: read_csv
+# Flags: CaseSensitive RegExp
+# Including: ./model
+# ContextLines: 1
+
+120 results - 22 files
+
+model\adoptiondata.py:
+  66                  for name, filename in sources.items():
+  67:                     df = pd.read_csv(filename, header=0, index_col=0, skipinitialspace=True,
+  68                              skip_blank_lines=True, comment='#')
+
+        #  Reading Adoption data from Solution directory
+
+model\aez.py:
+   78                  aez_path = tmr_path.joinpath(self._to_filename(col) + '.csv')
+   79:                 la_df = pd.read_csv(aez_path, index_col=0)
+   80                  total_perc_allocated = la_df.loc[self.solution_name]['Total % allocated']
+
+   93          """
+   94:         row = pd.read_csv(LAND_CSV_PATH.joinpath('aez', 'solution_aez_matrix.csv'),
+   95                  index_col=0).loc[self.solution_name]
+
+  107          for tmr in self.regimes:
+  108:             df = pd.read_csv(LAND_CSV_PATH.joinpath('world', subdir,
+  109                      self._to_filename(tmr) + '.csv'), index_col=0).drop('Total Area (km2)', 1)
+
+        # Hardcoded reference to data/ directory
+
+model\co2calcs.py:
+  59  
+  60:     co2_vals = pd.read_csv(StringIO(co2_vals), index_col=0, squeeze=True, float_precision='round_trip')
+  61  
+
+        # Inlined pseudo csv from DataFrame
+
+model\customadoption.py:
+   80              if filename is not None:
+   81:                 new = self._read_csv(filename)
+   82                  df = new if df is None else df.add(new, fill_value=0.0, axis='index')
+
+  111  
+  112:     def _read_csv(self, filename):
+  113          """Read in a CSV file from filename."""
+  114:         df = pd.read_csv(filename, header=0, index_col=0, skipinitialspace=True,
+  115                           skip_blank_lines=True, comment='#', dtype=np.float64)
+
+
+        # Reading data from solution directory
+
+
+model\dez.py:
+  55          """
+  56:         df = pd.read_csv(OCEAN_CSV_PATH.joinpath('dez', 'solution_oa_template.csv'), index_col=0)
+  57          df = df.fillna(0)
+
+  61                  dez_path = tdr_path.joinpath(self._to_filename(col) + '.csv')
+  62:                 oa_df = pd.read_csv(dez_path, index_col=0)
+  63                  total_perc_allocated = oa_df.loc[self.solution_name]['Total % allocated']
+
+  74          """
+  75:         row = pd.read_csv(OCEAN_CSV_PATH.joinpath('dez', 'solution_dez_matrix.csv'),
+  76                  index_col=0).loc[self.solution_name]
+
+  86          for tdr in self.regimes:
+  87:             df = pd.read_csv(OCEAN_CSV_PATH.joinpath('world', self._to_filename(tdr) + '.csv'),
+  88                      index_col=0).drop('Total Area (Mha)', 1)
+
+
+          # Hardcoded to /data directory
+
+model\fairutil.py:
+  120      baseline.index.name = 'Year'
+  121:     ddCO2 = pd.read_csv(str(baselineCO2_path), header=0, index_col=0, skipinitialspace=True,
+  122              skip_blank_lines=True, comment='#', squeeze=True)
+
+          # Hardcoded to /data directory  
+
+model\operatingcost.py:
+  33      # round_trip retains float precision
+  34:     new_funits_per_year = pd.read_csv(StringIO(new_funits_per_year), index_col=0, squeeze=True, float_precision='round_trip')
+  35:     new_annual_iunits_reqd = pd.read_csv(StringIO(new_annual_iunits_reqd), index_col=0,  squeeze=True, float_precision='round_trip')
+  36  
+
+          # pseudo-csv from pd.DataFrame
+
+
+model\tam.py:
+  73                  for name, filename in sources.items():
+  74:                     df = pd.read_csv(filename, header=0, index_col="Year", skipinitialspace=True,
+  75                              skip_blank_lines=True, comment='#', usecols=["Year"] + regions)
+
+  83                  for name, filename in sources.items():
+  84:                     df = pd.read_csv(filename, header=0, index_col="Year", skipinitialspace=True,
+  85                              skip_blank_lines=True, comment='#', usecols=["Year", main_region])
+
+
+        #  Reading from solution files
+
+model\tla.py:
+  52          if filename:
+  53:             self.df = pd.read_csv(filename, header=0, index_col=0,
+  54                      skipinitialspace=True, skip_blank_lines=True)
+
+        # Reading from solution files 
+
+model\unitadoption.py:
+   25  
+   26:     total_area_per_region = pd.read_csv(StringIO(total_area_per_region), index_col=0, squeeze=True, float_precision='round_trip')
+   27:     units_adopted = pd.read_csv(StringIO(units_adopted), index_col=0, squeeze=True, float_precision='round_trip')
+   28  
+
+          # pseudo-csv from dataframe
+
+   92          filename = os.path.join(self.datadir, 'unitadoption_ref_population.csv')
+   93:         result = pd.read_csv(filename, index_col=0, skipinitialspace=True,
+   94                               skip_blank_lines=True, comment='#')
+
+  105          filename = os.path.join(self.datadir, 'unitadoption_ref_gdp.csv')
+  106:         result = pd.read_csv(filename, index_col=0, skipinitialspace=True,
+  107                               skip_blank_lines=True, comment='#')
+
+  157          filename = os.path.join(self.datadir, 'unitadoption_pds_population.csv')
+  158:         result = pd.read_csv(filename, index_col=0, skipinitialspace=True,
+  159                               skip_blank_lines=True, comment='#')
+
+  169          filename = os.path.join(self.datadir, 'unitadoption_pds_gdp.csv')
+  170:         result = pd.read_csv(filename, index_col=0, skipinitialspace=True,
+  171                               skip_blank_lines=True, comment='#')
+
+          # Hard coded reference to /data files
+
+model\vma.py:
+   26      """
+   27:     vma_info_df = pd.read_csv(filename, index_col=0)
+   28      for _, row in vma_info_df.iterrows():
+
+  119              if isinstance(filename, io.StringIO) or filename.suffix == '.csv':
+  120:                 self._read_csv(filename=filename)
+  121              elif filename.suffix == '.xlsx' or filename.suffix == '.xlsm':
+
+  129  
+  130:     def _read_csv(self, filename):
+  131          """
+
+  139          """
+  140:         csv_df = pd.read_csv(filename, index_col=False, skipinitialspace=True, skip_blank_lines=True)
+  141          self._convert_from_human_readable(csv_df, filename)
+
+  312          new_df.to_csv(path_or_buf=self.filename, index=False)
+  313:         self._read_csv(filename=self.filename)
+  314  
+  315      def reload_from_file(self):
+  316:         self._read_csv(filename=self.filename)
+
+          # Reading solution VMA files
+
+model\vma2.py:
+  92  
+  93:         csv_df = pd.read_csv(io.BytesIO(vma_data_csv), index_col=False, skipinitialspace=True, skip_blank_lines=True)
+  94          self._convert_from_human_readable(csv_df)
+
+model\tests\test_adoptiondata.py:
+
+      ... lots of csv sample data in tests, of course
