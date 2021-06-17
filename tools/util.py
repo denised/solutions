@@ -26,7 +26,7 @@ def convert_float(val, return_nan=False):
     Convert a float; empty cell == 0.0 floating point.
     Ignores strings if they are not empty (will pass through without throwing an error).
     """
-    if val == '':
+    if val == '' or val is None:
         return nan if return_nan else 0
     else:
         return float(val)
@@ -34,7 +34,7 @@ def convert_float(val, return_nan=False):
 
 def empty_to_nan(val):
     """ Converts empty cell or cell containing only spaces to NaN """
-    if isinstance(val, str) and val.replace(' ', '') == '':
+    if val is None or isinstance(val, str) and val.replace(' ', '') == '':
         return nan
     else:
         return val
