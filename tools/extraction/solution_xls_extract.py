@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 """Extract parameters from a Drawdown excel model to help create
    the Python implementation of the solution and its scenarios.
+   This file is meant to be used as a script; `python solution_xls_extract.py --help` for instructions
 
    The code in this file is licensed under the GNU AFFERO GENERAL PUBLIC LICENSE
    version 3.0.
@@ -12,7 +13,6 @@
 """
 
 import argparse
-import glob
 import hashlib
 import json
 import os.path
@@ -27,10 +27,10 @@ import openpyxl
 import numpy as np
 import pandas as pd
 import pytest
-from solution import rrs
+from . import rrs
 
 from tools.util import convert_bool
-from tools.vma_xls_extract import VMAReader
+from tools.extraction.vma_xls_extract import VMAReader
 from model import advanced_controls as ac
 
 
@@ -38,14 +38,58 @@ pd.set_option('display.max_rows', 500)
 pd.set_option('display.max_columns', 500)
 pd.set_option('display.width', 1000)
 
-def cell_to_offsets(cell):
-    """Convert an Excel reference like C33 to (row, col)"""
-    return openpyxl.utils.cell.coordinate_to_tuple(cell)
+# Excel interaction:
+# The functions below allow for a standardized way to access excel cells in this code base.
+# In addition to standardizing the notation, they implement default values for empty cells.
+# Prefer to use these because it makes it easy to find all the access points and avoids empty-cell errors.
+# (In particular, avoid the use of openpyxl array access notation, as nice as it is, 
+# because it is impossible to search for)
+# Use excel column names instead of column indices for ease of debugging.
+
+def cell_to_offsets(cellref):
+    """Convert an Excel reference like "C33" to (row, col) in 1-based notation"""
+    return openpyxl.utils.cell.coordinate_to_tuple(cellref)
 
 def co(col):
+    """Return the 1-based column number for a column name (e.g. "B" or "AH")"""
     return openpyxl.utils.cell.column_index_from_string(col)
 
-def convert_sr_float(val):
+# The functions xls, xln and xli all take two forms of parameters
+#   xls(tab, ref)        # ref in "A3" format
+#   xls(tab, row, col)   # row and column in 1-based notation
+
+def xls(tab, row, col=None):
+    """Return a string value from tab(ref) or tab(row, col)."""
+    if col is None:
+        (row, col) = cell_to_offsets(row)
+    val = tab.cell(row, col).value
+    if val is None:
+        return ''
+    return str(val).strip()
+
+def xln(tab, row, col=None):
+    """Return the floating point number read from tab(ref) or tab(row, col)."""
+    if col is None:
+        (row, col) = cell_to_offsets(row)
+    val = tab.cell(row, col).value
+    if val is None or val == '':
+        return 0.0
+    return float(val)
+
+
+def xli(tab, row, col=None):
+    """Return the integer read from tab(ref) or tab(row, col)."""
+    if col is None:
+        (row, col) = cell_to_offsets(row)
+    val = tab.cell(row, col).value
+    if val is None or val == '':
+        return 0
+    return int(val)
+
+
+# convert_sr_float handles a more complex case that occurs only on the ScenarioRecord tab.
+
+def convert_sr_float(tab, row, col):
     """Return floating point value from Excel ScenarioRecord tab.
 
        There are three main formats:
@@ -53,6 +97,7 @@ def convert_sr_float(val):
        + percentage: 20%
        + annotated: Val:(0.182810601365724) Formula:='Variable Meta-analysis'!G1411
     """
+    val = xls(tab, row, col)
     m = re.match(r'Val:\(([-+]?(\d+(\.\d*)?|\d+(\,\d*)?|\.\d+)([eE][-+]?\d+)?)\) Formula:=',
                  str(val))
     if m:
@@ -63,11 +108,9 @@ def convert_sr_float(val):
     if str(val).endswith('%'):
         (num, _) = str(val).split('%', maxsplit=1)
         return float(num) / 100.0
-    if val == '' or val is None:
+    if val == '':
         return 0.0
     return float(val)
-
-
 
 
 def get_rrs_scenarios(wb, solution_category):
@@ -79,8 +122,8 @@ def get_rrs_scenarios(wb, solution_category):
     sr_tab = wb['ScenarioRecord']
     scenarios = {}
     for row in range(sr_tab.min_row, sr_tab.max_row):
-        col_d = sr_tab.cell(row, co("D")).value
-        col_e = sr_tab.cell(row, co("E")).value
+        col_d = xls(sr_tab, row, co("D"))
+        col_e = xls(sr_tab, row, co("E"))
         if col_d == 'Name of Scenario:' and 'TEMPLATE' not in col_e:
             # start of scenario block
             scenario_name = col_e
@@ -92,170 +135,173 @@ def get_rrs_scenarios(wb, solution_category):
             s['solution_category'] = solution_category
             s['vmas'] = 'VMAs'
 
-            s['description'] = sr_tab.cell(row + 1, co("D")).value
-            report_years = sr_tab.cell(row + 2, co("E")).value  # E:2 from top of scenario
+            s['description'] = xls(sr_tab, row + 1, co("D"))
+            report_years = xls(sr_tab, row + 2, co("E"))  # E:2 from top of scenario
             (start, end) = report_years.split('-')
             s['report_start_year'] = int(start)
             s['report_end_year'] = int(end)
 
-            assert sr_tab.cell(row + 46, co("B")).value == 'Conventional'
-            assert sr_tab.cell(row + 47, co("D")).value == 'First Cost:'
+            assert xls(sr_tab, row + 46, co("B")) == 'Conventional'
+            assert xls(sr_tab, row + 47, co("D")) == 'First Cost:'
             s['conv_2014_cost'] = link_vma(sr_tab, row + 47, co("E"))
-            s['conv_first_cost_efficiency_rate'] = convert_sr_float(sr_tab.cell(row + 48, co("E")).value)
+            s['conv_first_cost_efficiency_rate'] = convert_sr_float(sr_tab, row + 48, co("E"))
             s['conv_lifetime_capacity'] = link_vma(sr_tab, row + 49, co("E"))
             s['conv_avg_annual_use'] = link_vma(sr_tab, row + 50, co("E"))
             s['conv_var_oper_cost_per_funit'] = link_vma(sr_tab, row + 51, co("E"))
             s['conv_fixed_oper_cost_per_iunit'] = link_vma(sr_tab, row + 52, co("E"))
-            s['conv_fuel_cost_per_funit'] = convert_sr_float(sr_tab.cell(row + 54, co("E")).value)
+            s['conv_fuel_cost_per_funit'] = convert_sr_float(sr_tab, row + 54, co("E"))
 
-            assert sr_tab.cell(row + 64, co("B")).value == 'Solution'
-            assert sr_tab.cell(row + 65, co("D")).value == 'First Cost:'
+            assert xls(sr_tab, row + 64, co("B")) == 'Solution'
+            assert xls(sr_tab, row + 65, co("D")) == 'First Cost:'
             s['pds_2014_cost'] = s['ref_2014_cost'] = link_vma(sr_tab, row + 65, co("E"))
-            s['soln_first_cost_efficiency_rate'] = convert_sr_float(sr_tab.cell(row + 66, co("E")).value)
-            s['soln_first_cost_below_conv'] = convert_bool(sr_tab.cell(row + 66, co("G")).value)
+            s['soln_first_cost_efficiency_rate'] = convert_sr_float(sr_tab, row + 66, co("E"))
+            s['soln_first_cost_below_conv'] = convert_bool(xls(sr_tab, row + 66, co("G")))
             s['soln_lifetime_capacity'] = link_vma(sr_tab, row + 67, co("E"))
             s['soln_avg_annual_use'] = link_vma(sr_tab, row + 68, co("E"))
             s['soln_var_oper_cost_per_funit'] = link_vma(sr_tab, row + 69, co("E"))
             s['soln_fixed_oper_cost_per_iunit'] = link_vma(sr_tab, row + 70, co("E"))
-            s['soln_fuel_cost_per_funit'] = convert_sr_float(sr_tab.cell(row + 72, co("E")).value)
+            s['soln_fuel_cost_per_funit'] = convert_sr_float(sr_tab, row + 72, co("E"))
 
-            assert sr_tab.cell(row + 76, co("B")).value == 'General'
-            s['npv_discount_rate'] = convert_sr_float(sr_tab.cell(row + 77, co("E")).value)
+            assert xls(sr_tab, row + 76, co("B")) == 'General'
+            s['npv_discount_rate'] = convert_sr_float(sr_tab, row + 77, co("E"))
 
-            assert sr_tab.cell(row + 86, co("B")).value == 'EMISSIONS INPUTS'
+            assert xls(sr_tab, row + 86, co("B")) == 'EMISSIONS INPUTS'
 
-            assert sr_tab.cell(row + 88, co("B")).value == 'Grid Emissions'
+            assert xls(sr_tab, row + 88, co("B")) == 'Grid Emissions'
             s['conv_annual_energy_used'] = link_vma(sr_tab, row + 89, co("E"))
             s['soln_energy_efficiency_factor'] = link_vma(sr_tab, row + 90, co("E"))
             s['soln_annual_energy_used'] = link_vma(sr_tab, row + 91, co("E"))
 
-            assert sr_tab.cell(row + 94, co("B")).value == 'Fuel Emissions'
+            assert xls(sr_tab, row + 94, co("B")) == 'Fuel Emissions'
             s['conv_fuel_consumed_per_funit'] = link_vma(sr_tab, row + 95, co("E"))
             s['soln_fuel_efficiency_factor'] = link_vma(sr_tab, row + 96, co("E"))
             s['conv_fuel_emissions_factor'] = link_vma(sr_tab, row + 97, co("E"))
             s['soln_fuel_emissions_factor'] = link_vma(sr_tab, row + 98, co("E"))
 
-            assert sr_tab.cell(row + 103, co("B")).value == 'Direct Emissions'
+            assert xls(sr_tab, row + 103, co("B")) == 'Direct Emissions'
             s['conv_emissions_per_funit'] = link_vma(sr_tab, row + 105, co("E"))
             s['soln_emissions_per_funit'] = link_vma(sr_tab, row + 106, co("E"))
 
-            assert sr_tab.cell(row + 111, co("B")).value == 'Indirect Emissions'
+            assert xls(sr_tab, row + 111, co("B")) == 'Indirect Emissions'
             s['conv_indirect_co2_per_unit'] = link_vma(sr_tab, row + 112, co("E"))
             s['soln_indirect_co2_per_iunit'] = link_vma(sr_tab, row + 113, co("E"))
-            i_vs_f = str(sr_tab.cell(row + 114, co("E")).value).lower().strip()
+            i_vs_f = xls(sr_tab, row + 114, co("E")).lower()
             s['conv_indirect_co2_is_iunits'] = False if i_vs_f == 'functional' else True
 
-            assert sr_tab.cell(row + 118, co("B")).value == 'Optional Inputs'
+            assert xls(sr_tab, row + 118, co("B")) == 'Optional Inputs'
             s['ch4_co2_per_funit'] = link_vma(sr_tab, row + 119, co("E"))
-            s['ch4_is_co2eq'] = (sr_tab.cell(row + 119, 5).value == 't CH4-CO2eq per TWh')
+            s['ch4_is_co2eq'] = (xls(sr_tab, row + 119, co("E")) == 't CH4-CO2eq per TWh')
             s['n2o_co2_per_funit'] = link_vma(sr_tab, row + 120, co("E"))
-            s['n2o_is_co2eq'] = (sr_tab.cell(row + 120, 5).value == 't N2O-CO2eq per TWh')
-            s['co2eq_conversion_source'] = str(sr_tab.cell(row + 121, co("E")).value).strip()
+            s['n2o_is_co2eq'] = (xls(sr_tab, row + 120, co("E")) == 't N2O-CO2eq per TWh')
+            s['co2eq_conversion_source'] = xls(sr_tab, row + 121, co("E"))
 
-            assert sr_tab.cell(row + 124, co("B")).value == 'General Climate Inputs'
-            s['emissions_use_co2eq'] = convert_bool(sr_tab.cell(row + 125, co("E")).value)
-            s['emissions_grid_source'] = str(sr_tab.cell(row + 126, co("E")).value).strip()
-            s['emissions_grid_range'] = str(sr_tab.cell(row + 127, 4).value).strip()
+            assert xls(sr_tab, row + 124, co("B")) == 'General Climate Inputs'
+            s['emissions_use_co2eq'] = convert_bool(xls(sr_tab, row + 125, co("E")))
+            s['emissions_grid_source'] = xls(sr_tab, row + 126, co("E"))
+            s['emissions_grid_range'] = xls(sr_tab, row + 127, co("E"))
 
-            assert sr_tab.cell(row + 135, co("B")).value == 'TAM'
-            s['source_until_2014'] = normalize_source_name(str(sr_tab.cell(row + 136, co("E")).value))
-            s['ref_source_post_2014'] = normalize_source_name(str(sr_tab.cell(row + 136, co("H")).value))
-            s['pds_source_post_2014'] = normalize_source_name(str(sr_tab.cell(row + 136, co("K")).value))
+            assert xls(sr_tab, row + 135, co("B")) == 'TAM'
+            s['source_until_2014'] = normalize_source_name(xls(sr_tab, row + 136, co("E")))
+            s['ref_source_post_2014'] = normalize_source_name(xls(sr_tab, row + 136, co("H")))
+            s['pds_source_post_2014'] = normalize_source_name(xls(sr_tab, row + 136, co("K")))
 
             s['ref_base_adoption'] = {
-                'World': convert_sr_float(sr_tab.cell(row + 151, co("E")).value),
-                'OECD90': convert_sr_float(sr_tab.cell(row + 152, co("E")).value),
-                'Eastern Europe': convert_sr_float(sr_tab.cell(row + 153, co("E")).value),
-                'Asia (Sans Japan)': convert_sr_float(sr_tab.cell(row + 154, co("E")).value),
-                'Middle East and Africa': convert_sr_float(sr_tab.cell(row + 155, co("E")).value),
-                'Latin America': convert_sr_float(sr_tab.cell(row + 156, co("E")).value),
-                'China': convert_sr_float(sr_tab.cell(row + 157, co("E")).value),
-                'India': convert_sr_float(sr_tab.cell(row + 158, co("E")).value),
-                'EU': convert_sr_float(sr_tab.cell(row + 159, co("E")).value),
-                'USA': convert_sr_float(sr_tab.cell(row + 160, co("E")).value),
+                'World': convert_sr_float(sr_tab, row + 151, co("E")),
+                'OECD90': convert_sr_float(sr_tab, row + 152, co("E")),
+                'Eastern Europe': convert_sr_float(sr_tab, row + 153, co("E")),
+                'Asia (Sans Japan)': convert_sr_float(sr_tab, row + 154, co("E")),
+                'Middle East and Africa': convert_sr_float(sr_tab, row + 155, co("E")),
+                'Latin America': convert_sr_float(sr_tab, row + 156, co("E")),
+                'China': convert_sr_float(sr_tab, row + 157, co("E")),
+                'India': convert_sr_float(sr_tab, row + 158, co("E")),
+                'EU': convert_sr_float(sr_tab, row + 159, co("E")),
+                'USA': convert_sr_float(sr_tab, row + 160, co("E")),
             }
 
-            assert sr_tab.cell(row + 163, co("B")).value == 'PDS ADOPTION SCENARIO INPUTS'
-            s['soln_pds_adoption_basis'] = str(sr_tab.cell(row + 164, co("E")).value).strip()
-            s['soln_pds_adoption_regional_data'] = convert_bool(sr_tab.cell(row + 165, co("E")).value)
-
-            def percnt(r):
-                return 0.0 if sr_tab.cell(r, 4).value == '' else sr_tab.cell(r, 4).value
+            assert xls(sr_tab, row + 163, co("B")) == 'PDS ADOPTION SCENARIO INPUTS'
+            s['soln_pds_adoption_basis'] = xls(sr_tab, row + 164, co("E"))
+            s['soln_pds_adoption_regional_data'] = convert_bool(xls(sr_tab, row + 165, co("E")))
 
             s['pds_adoption_final_percentage'] = {
-                'World': percnt(row + 170),
-                'OECD90': percnt(row + 171),
-                'Eastern Europe': percnt(row + 172),
-                'Asia (Sans Japan)': percnt(row + 173),
-                'Middle East and Africa': percnt(row + 174),
-                'Latin America': percnt(row + 175),
-                'China': percnt(row + 176),
-                'India': percnt(row + 177),
-                'EU': percnt(row + 178),
-                'USA': percnt(row + 179),
+                'World': xln(sr_tab, row + 170, co("E")),
+                'OECD90': xln(sr_tab, row + 171, co("E")),
+                'Eastern Europe': xln(sr_tab, row + 172, co("E")),
+                'Asia (Sans Japan)': xln(sr_tab, row + 173, co("E")),
+                'Middle East and Africa': xln(sr_tab, row + 174, co("E")),
+                'Latin America': xln(sr_tab, row + 175, co("E")),
+                'China': xln(sr_tab, row + 176, co("E")),
+                'India': xln(sr_tab, row + 177, co("E")),
+                'EU': xln(sr_tab, row + 178, co("E")),
+                'USA': xln(sr_tab, row + 179, co("E")),
             }
 
             if s['soln_pds_adoption_basis'] == 'DEFAULT S-Curve':
-                s_curve_type = str(sr_tab.cell(row + 181, co("E")).value)
+                s_curve_type = xls(sr_tab, row + 181, co("E"))
                 if s_curve_type == 'Alternate S-Curve (Bass Model)':
                     s['soln_pds_adoption_basis'] = 'Bass Diffusion S-Curve'
                     s['pds_adoption_s_curve_innovation'] = [
-                        ('World', convert_sr_float(sr_tab.cell(row + 170, co("G")).value)),
-                        ('OECD90', convert_sr_float(sr_tab.cell(row + 171, co("G")).value)),
-                        ('Eastern Europe', convert_sr_float(sr_tab.cell(row + 172, co("G")).value)),
-                        ('Asia (Sans Japan)', convert_sr_float(sr_tab.cell(row + 173, co("G")).value)),
-                        ('Middle East and Africa', convert_sr_float(sr_tab.cell(row + 174, co("G")).value)),
-
-                        ('Latin America', convert_sr_float(sr_tab.cell(row + 175, co("G")).value)),
-                        ('China', convert_sr_float(sr_tab.cell(row + 176, co("G")).value)),
-                        ('India', convert_sr_float(sr_tab.cell(row + 177, co("G")).value)),
-                        ('EU', convert_sr_float(sr_tab.cell(row + 178, co("G")).value)),
-                        ('USA', convert_sr_float(sr_tab.cell(row + 179, co("G")).value))]
+                        ('World', convert_sr_float(sr_tab, row + 170, co("G"))),
+                        ('OECD90', convert_sr_float(sr_tab, row + 171, co("G"))),
+                        ('Eastern Europe', convert_sr_float(sr_tab, row + 172, co("G"))),
+                        ('Asia (Sans Japan)', convert_sr_float(sr_tab, row + 173, co("G"))),
+                        ('Middle East and Africa', convert_sr_float(sr_tab, row + 174, co("G"))),
+                        ('Latin America', convert_sr_float(sr_tab, row + 175, co("G"))),
+                        ('China', convert_sr_float(sr_tab, row + 176, co("G"))),
+                        ('India', convert_sr_float(sr_tab, row + 177, co("G"))),
+                        ('EU', convert_sr_float(sr_tab, row + 178, co("G"))),
+                        ('USA', convert_sr_float(sr_tab, row + 179, co("G")))]
                     s['pds_adoption_s_curve_imitation'] = [
-                        ('World', convert_sr_float(sr_tab.cell(row + 170, co("H")).value)),
-                        ('OECD90', convert_sr_float(sr_tab.cell(row + 171, co("H")).value)),
-                        ('Eastern Europe', convert_sr_float(sr_tab.cell(row + 172, co("H")).value)),
-                        ('Asia (Sans Japan)', convert_sr_float(sr_tab.cell(row + 173, co("H")).value)),
-                        ('Middle East and Africa', convert_sr_float(sr_tab.cell(row + 174, co("H")).value)),
-
-                        ('Latin America', convert_sr_float(sr_tab.cell(row + 175, co("H")).value)),
-                        ('China', convert_sr_float(sr_tab.cell(row + 176, co("H")).value)),
-                        ('India', convert_sr_float(sr_tab.cell(row + 177, co("H")).value)),
-                        ('EU', convert_sr_float(sr_tab.cell(row + 178, co("H")).value)),
-                        ('USA', convert_sr_float(sr_tab.cell(row + 179, co("H")).value))]
+                        ('World', convert_sr_float(sr_tab, row + 170, co("H"))),
+                        ('OECD90', convert_sr_float(sr_tab, row + 171, co("H"))),
+                        ('Eastern Europe', convert_sr_float(sr_tab, row + 172, co("H"))),
+                        ('Asia (Sans Japan)', convert_sr_float(sr_tab, row + 173, co("H"))),
+                        ('Middle East and Africa', convert_sr_float(sr_tab, row + 174, co("H"))),
+                        ('Latin America', convert_sr_float(sr_tab, row + 175, co("H"))),
+                        ('China', convert_sr_float(sr_tab, row + 176, co("H"))),
+                        ('India', convert_sr_float(sr_tab, row + 177, co("H"))),
+                        ('EU', convert_sr_float(sr_tab, row + 178, co("H"))),
+                        ('USA', convert_sr_float(sr_tab, row + 179, co("H")))]
                 elif s_curve_type == 'Default S-Curve (Logistic Model)':
                     s['soln_pds_adoption_basis'] = 'Logistic S-Curve'
                 else:
                     raise ValueError('Unknown S-Curve:' + s_curve_type)
 
-            assert sr_tab.cell(row + 183, co("B")).value == 'Existing PDS Prognostication Assumptions'
-            adopt = normalize_source_name(str(sr_tab.cell(row + 184, co("E")).value).strip())
+            assert xls(sr_tab, row + 183, co("B")) == 'Existing PDS Prognostication Assumptions'
+            adopt = normalize_source_name(xls(sr_tab, row + 184, co("E")))
             adopt = normalize_case_name(adopt)
-            if adopt: s['soln_pds_adoption_prognostication_source'] = adopt
-            adopt = str(sr_tab.cell(row + 185, co("E")).value).strip()
-            if adopt: s['soln_pds_adoption_prognostication_trend'] = adopt
-            adopt = str(sr_tab.cell(row + 186, co("E")).value).strip()
-            if adopt: s['soln_pds_adoption_prognostication_growth'] = adopt
+            if adopt: 
+                s['soln_pds_adoption_prognostication_source'] = adopt
+            
+            adopt = xls(sr_tab, row + 185, co("E"))
+            if adopt: 
+                s['soln_pds_adoption_prognostication_trend'] = adopt
+            
+            adopt = xls(sr_tab, row + 186, co("E"))
+            if adopt: 
+                s['soln_pds_adoption_prognostication_growth'] = adopt
 
-            assert sr_tab.cell(row + 194, co("B")).value == 'Fully Customized PDS'
-            custom = str(sr_tab.cell(row + 195, co("E")).value).strip()
+            assert xls(sr_tab, row + 194, co("B")) == 'Fully Customized PDS'
+            custom = xls(sr_tab, row + 195, co("E"))
             if custom:
                 s['soln_pds_adoption_custom_name'] = custom
                 if 'soln_pds_adoption_basis' not in s:  # sometimes row 164 is blank
                     s['soln_pds_adoption_basis'] = 'Fully Customized PDS'
 
-            assert sr_tab.cell(row + 198, co("B")).value == 'REF ADOPTION SCENARIO INPUTS'
-            adopt = str(sr_tab.cell(row + 199, co("E")).value).strip()
-            if adopt: s['soln_ref_adoption_basis'] = adopt
-            custom = str(sr_tab.cell(row + 200, co("E")).value).strip()
-            if custom: s['soln_ref_adoption_custom_name'] = custom
-            s['soln_ref_adoption_regional_data'] = convert_bool(sr_tab.cell(row + 201, co("E")).value)
+            assert xls(sr_tab, row + 198, co("B")) == 'REF ADOPTION SCENARIO INPUTS'
+            adopt = xls(sr_tab, row + 199, co("E"))
+            if adopt: 
+                s['soln_ref_adoption_basis'] = adopt
+            
+            custom = xls(sr_tab, row + 200, co("E"))
+            if custom: 
+                s['soln_ref_adoption_custom_name'] = custom
+            s['soln_ref_adoption_regional_data'] = convert_bool(xls(sr_tab, row + 201, co("E")))
 
-            assert sr_tab.cell(row + 217, co("B")).value == 'Adoption Adjustment'
-            adjust = sr_tab.cell(row + 218, co("E")).value
+            assert xls(sr_tab, row + 217, co("B")) == 'Adoption Adjustment'
+            adjust = xls(sr_tab, row + 218, co("E"))
             if adjust and adjust != "(none)":
                 s['pds_adoption_use_ref_years'] = [int(x) for x in adjust.split(',') if x != '']
-            adjust = sr_tab.cell(row + 219, co("E")).value
+            adjust = xls(sr_tab, row + 219, co("E"))
             if adjust and adjust != "(none)":
                 s['ref_adoption_use_pds_years'] = [int(x) for x in adjust.split(',') if x != '']
 
@@ -273,8 +319,8 @@ def get_land_scenarios(wb, solution_category):
     sr_tab = wb['ScenarioRecord']
     scenarios = {}
     for row in range(sr_tab.min_row, sr_tab.max_row):
-        col_d = sr_tab.cell(row, co("D")).value
-        col_e = sr_tab.cell(row, co("E")).value
+        col_d = xls(sr_tab, row, co("D"))
+        col_e = xls(sr_tab, row, co("E"))
         if col_d == 'Name of Scenario:' and 'TEMPLATE' not in col_e:
             # start of scenario block
             scenario_name = col_e
@@ -286,20 +332,21 @@ def get_land_scenarios(wb, solution_category):
             s['solution_category'] = solution_category
             s['vmas'] = 'VMAs'
 
-            s['description'] = sr_tab.value(row + 1, co("E")).value
-            report_years = sr_tab.value(row + 2, co("E")).value  # E:2 from top of scenario
+            s['description'] = xls(sr_tab, row + 1, co("E"))
+            report_years = xls(sr_tab, row + 2, co("E"))
             (start, end) = report_years.split('-')
             s['report_start_year'] = int(start)
             s['report_end_year'] = int(end)
 
-            assert sr_tab.cell(row + 201, co("D")).value == 'Custom TLA Used?:'
-            s['use_custom_tla'] = convert_bool(sr_tab.cell(row + 201, co("E")).value)
-            values = (sr_tab.cell(row + 203, co("E")).value and sr_tab.cell(row + 203, co("H")).value and
-                    sr_tab.cell(row + 203, co("K")).value)
-            if s['use_custom_tla'] and values:
-                world_tla = convert_sr_float(sr_tab.cell(row + 203, co("E")).value)
-                future_ref = convert_sr_float(sr_tab.cell(row + 203, co("H")).value)
-                future_pds = convert_sr_float(sr_tab.cell(row + 203, co("K")).value)
+            assert xls(sr_tab, row + 201, co("D")) == 'Custom TLA Used?:'
+            s['use_custom_tla'] = convert_bool(xls(sr_tab, row + 201, co("E")))
+            has_values = (xls(sr_tab, row + 203, co("E")) and 
+                    xls(sr_tab, row + 203, co("H")) and
+                    xls(sr_tab, row + 203, co("K")))
+            if s['use_custom_tla'] and has_values:
+                world_tla = convert_sr_float(xls(sr_tab, row + 203, co("E")))
+                future_ref = convert_sr_float(xls(sr_tab, row + 203, co("H")))
+                future_pds = convert_sr_float(xls(sr_tab, row + 203, co("K")))
                 # we can only handle if all three are the same
                 err = f"mismatched Custom TLA values at row {row + 203}"
                 assert world_tla == pytest.approx(future_ref), err
@@ -307,47 +354,45 @@ def get_land_scenarios(wb, solution_category):
                 s['custom_tla_fixed_value'] = world_tla
 
             s['ref_base_adoption'] = {
-                'World': convert_sr_float(sr_tab.cell(row + 218, co("E")).value),
-                'OECD90': convert_sr_float(sr_tab.cell(row + 219, co("E")).value),
-                'Eastern Europe': convert_sr_float(sr_tab.cell(row + 220, co("E")).value),
-                'Asia (Sans Japan)': convert_sr_float(sr_tab.cell(row + 221, co("E")).value),
-                'Middle East and Africa': convert_sr_float(sr_tab.cell(row + 222, co("E")).value),
-                'Latin America': convert_sr_float(sr_tab.cell(row + 223, co("E")).value),
-                'China': convert_sr_float(sr_tab.cell(row + 224, co("E")).value),
-                'India': convert_sr_float(sr_tab.cell(row + 225, co("E")).value),
-                'EU': convert_sr_float(sr_tab.cell(row + 226, co("E")).value),
-                'USA': convert_sr_float(sr_tab.cell(row + 227, co("E")).value),
+                'World': convert_sr_float(sr_tab, row + 218, co("E")),
+                'OECD90': convert_sr_float(sr_tab, row + 219, co("E")),
+                'Eastern Europe': convert_sr_float(sr_tab, row + 220, co("E")),
+                'Asia (Sans Japan)': convert_sr_float(sr_tab, row + 221, co("E")),
+                'Middle East and Africa': convert_sr_float(sr_tab, row + 222, co("E")),
+                'Latin America': convert_sr_float(sr_tab, row + 223, co("E")),
+                'China': convert_sr_float(sr_tab, row + 224, co("E")),
+                'India': convert_sr_float(sr_tab, row + 225, co("E")),
+                'EU': convert_sr_float(sr_tab, row + 226, co("E")),
+                'USA': convert_sr_float(sr_tab, row + 227, co("E")),
             }
 
-            assert sr_tab.cell(row + 230, co("B")).value == 'PDS ADOPTION SCENARIO INPUTS'
-            adopt = str(sr_tab.cell(row + 231, co("E")).value).strip()
-            if adopt: s['soln_pds_adoption_basis'] = adopt
-            s['soln_pds_adoption_regional_data'] = convert_bool(sr_tab.cell(row + 232, co("E")).value)
-
-            def percnt(r):
-                return 0.0 if sr_tab.cell(r, co("E")).value == '' else sr_tab.cell(r, co("E")).value
+            assert xls(sr_tab, row + 230, co("B")) == 'PDS ADOPTION SCENARIO INPUTS'
+            adopt = xls(sr_tab, row + 231, co("E"))
+            if adopt: 
+                s['soln_pds_adoption_basis'] = adopt
+            s['soln_pds_adoption_regional_data'] = convert_bool(xls(sr_tab, row + 232, co("E")))
 
             s['pds_adoption_final_percentage'] = {
-                'World': percnt(row + 236),
-                'OECD90': percnt(row + 237),
-                'Eastern Europe': percnt(row + 238),
-                'Asia (Sans Japan)': percnt(row + 239),
-                'Middle East and Africa': percnt(row + 240),
-                'Latin America': percnt(row + 241),
-                'China': percnt(row + 242),
-                'India': percnt(row + 243),
-                'EU': percnt(row + 244),
-                'USA': percnt(row + 245),
+                'World': xln(sr_tab, row + 236, co("E")),
+                'OECD90': xln(sr_tab, row + 237, co("E")),
+                'Eastern Europe': xln(sr_tab, row + 238, co("E")),
+                'Asia (Sans Japan)': xln(sr_tab, row + 239, co("E")),
+                'Middle East and Africa': xln(sr_tab, row + 240, co("E")),
+                'Latin America': xln(sr_tab, row + 241, co("E")),
+                'China': xln(sr_tab, row + 242, co("E")),
+                'India': xln(sr_tab, row + 243, co("E")),
+                'EU': xln(sr_tab, row + 244, co("E")),
+                'USA': xln(sr_tab, row + 245, co("E")),
             }
 
-            assert sr_tab.cell(row + 258, co("B")).value == 'Fully Customized PDS'
-            custom = str(sr_tab.cell(row + 259, co("E")).value).strip()
+            assert xls(sr_tab, row + 258, co("B")) == 'Fully Customized PDS'
+            custom = xls(sr_tab, row + 259, co("E"))
             if custom:
                 s['soln_pds_adoption_custom_name'] = custom
                 if 'soln_pds_adoption_basis' not in s:  # sometimes row 164 is blank
                     s['soln_pds_adoption_basis'] = 'Fully Customized PDS'
                 try:
-                    high, low = str(sr_tab.cell(row + 260, co("H")).value).split(',')
+                    high, low = xls(sr_tab, row + 260, co("H")).split(',')
                 except ValueError:
                     high = low = "1"
                 if high != "1" and high != "":
@@ -355,68 +400,73 @@ def get_land_scenarios(wb, solution_category):
                 if low != "1" and low != "":
                     s['soln_pds_adoption_custom_low_sd_mult'] = float(low)
 
-            assert sr_tab.cell(row + 262, co("B")).value == 'REF ADOPTION SCENARIO INPUTS'
-            adopt = str(sr_tab.cell(row + 263, co("E")).value).strip()
-            if adopt: s['soln_ref_adoption_basis'] = adopt
-            custom = str(sr_tab.cell(row + 264, co("E")).value).strip()
-            if custom: s['soln_ref_adoption_custom_name'] = custom
-            s['soln_ref_adoption_regional_data'] = convert_bool(sr_tab.cell(row + 265, co("E")).value)
+            assert xls(sr_tab, row + 262, co("B")) == 'REF ADOPTION SCENARIO INPUTS'
+            adopt = xls(sr_tab, row + 263, co("E"))
+            if adopt: 
+                s['soln_ref_adoption_basis'] = adopt
+            
+            custom = xls(sr_tab, row + 264, co("E"))
+            if custom: 
+                s['soln_ref_adoption_custom_name'] = custom
+            
+            s['soln_ref_adoption_regional_data'] = convert_bool(xls(sr_tab, row + 265, co("E")))
 
-            assert sr_tab.cell(row + 286, co("B")).value == 'Adoption Adjustment'
-            adjust = sr_tab.cell(row + 287, co("E")).value
+            assert xls(sr_tab, row + 286, co("B")) == 'Adoption Adjustment'
+            adjust = xls(sr_tab, row + 287, co("E"))
             if adjust and adjust != "(none)":
                 s['pds_adoption_use_ref_years'] = [int(x) for x in adjust.split(',') if x != '']
-            adjust = sr_tab.cell(row + 288, co("E")).value
+            
+            adjust = xls(sr_tab, row + 288, co("E"))
             if adjust and adjust != "(none)":
                 s['ref_adoption_use_pds_years'] = [int(x) for x in adjust.split(',') if x != '']
             # TODO: handle soln_pds_adoption_prognostication_source
 
-            assert sr_tab.cell(row + 54, co("B")).value == 'Conventional'
-            assert sr_tab.cell(row + 55, co("D")).value == 'First Cost:'
+            assert xls(sr_tab, row + 54, co("B")) == 'Conventional'
+            assert xls(sr_tab, row + 55, co("D")) == 'First Cost:'
             s['conv_2014_cost'] = link_vma(sr_tab, row + 55, co("E"))
             s['conv_first_cost_efficiency_rate'] = 0.0  # always 0 for LAND models
             s['conv_fixed_oper_cost_per_iunit'] = link_vma(sr_tab, row + 56, co("E"))
-            s['conv_expected_lifetime'] = convert_sr_float(sr_tab.cell(row + 59, co("E")).value)
+            s['conv_expected_lifetime'] = convert_sr_float(xls(sr_tab, row + 59, co("E")))
             s['yield_from_conv_practice'] = link_vma(sr_tab, row + 60, co("E"))
 
-            assert sr_tab.cell(row + 72, co("B")).value == 'Solution'
-            assert sr_tab.cell(row + 73, co("D")).value == 'First Cost:'
+            assert xls(sr_tab, row + 72, co("B")) == 'Solution'
+            assert xls(sr_tab, row + 73, co("D")) == 'First Cost:'
             s['pds_2014_cost'] = s['ref_2014_cost'] = link_vma(sr_tab, row + 73, co("E"))
             s['soln_first_cost_efficiency_rate'] = 0.0  # always 0 for LAND models
             s['soln_fixed_oper_cost_per_iunit'] = link_vma(sr_tab, row + 74, co("E"))
-            s['soln_expected_lifetime'] = convert_sr_float(sr_tab.cell(row + 77, co("E")).value)
+            s['soln_expected_lifetime'] = convert_sr_float(xls(sr_tab, row + 77, co("E")))
             s['yield_gain_from_conv_to_soln'] = link_vma(sr_tab, row + 78, co("E"))
 
-            assert sr_tab.cell(row + 90, co("B")).value == 'General'
-            s['npv_discount_rate'] = convert_sr_float(sr_tab.cell(row + 91, co("E")).value)
+            assert xls(sr_tab, row + 90, co("B")) == 'General'
+            s['npv_discount_rate'] = convert_sr_float(xls(sr_tab, row + 91, co("E")))
 
-            assert sr_tab.cell(row + 156, 1).value == 'General Emissions Inputs'
-            s['emissions_use_co2eq'] = convert_bool(sr_tab.cell(row + 157, co("E")).value)
-            s['emissions_use_agg_co2eq'] = convert_bool(sr_tab.cell(row + 158, co("E")).value)
-            s['emissions_grid_source'] = str(sr_tab.cell(row + 159, co("E")).value)
-            s['emissions_grid_range'] = str(sr_tab.cell(row + 160, co("E")).value)
+            assert xls(sr_tab, row + 156, co("B")) == 'General Emissions Inputs'
+            s['emissions_use_co2eq'] = convert_bool(xls(sr_tab, row + 157, co("E")))
+            s['emissions_use_agg_co2eq'] = convert_bool(xls(sr_tab, row + 158, co("E")))
+            s['emissions_grid_source'] = xls(sr_tab, row + 159, co("E"))
+            s['emissions_grid_range'] = xls(sr_tab, row + 160, co("E"))
 
-            assert sr_tab.cell(row + 144, co("B")).value == 'Indirect Emissions'
-            s['conv_indirect_co2_per_unit'] = convert_sr_float(sr_tab.cell(row + 145, co("E")).value)
-            s['soln_indirect_co2_per_iunit'] = convert_sr_float(sr_tab.cell(row + 146, co("E")).value)
+            assert xls(sr_tab, row + 144, co("B")) == 'Indirect Emissions'
+            s['conv_indirect_co2_per_unit'] = convert_sr_float(sr_tab, row + 145, co("E"))
+            s['soln_indirect_co2_per_iunit'] = convert_sr_float(sr_tab, row + 146, co("E"))
 
-            assert sr_tab.cell(row + 132, co("B")).value == 'Direct Emissions'
+            assert xls(sr_tab, row + 132, co("B")) == 'Direct Emissions'
             s['tco2eq_reduced_per_land_unit'] = link_vma(sr_tab, row + 133, co("E"))
-            s['tco2eq_rplu_rate'] = str(sr_tab.cell(row + 133, co("H")).value)
+            s['tco2eq_rplu_rate'] = xls(sr_tab, row + 133, co("H"))
             s['tco2_reduced_per_land_unit'] = link_vma(sr_tab, row + 134, co("E"))
-            s['tco2_rplu_rate'] = str(sr_tab.cell(row + 134, co("H")).value)
+            s['tco2_rplu_rate'] = xls(sr_tab, row + 134, co("H"))
             s['tn2o_co2_reduced_per_land_unit'] = link_vma(sr_tab, row + 135, co("E"))
-            s['tn2o_co2_rplu_rate'] = str(sr_tab.cell(row + 135, co("H")).value)
+            s['tn2o_co2_rplu_rate'] = xls(sr_tab, row + 135, co("H"))
             s['tch4_co2_reduced_per_land_unit'] = link_vma(sr_tab, row + 136, co("E"))
-            s['tch4_co2_rplu_rate'] = str(sr_tab.cell(row + 136, co("H")).value)
-            s['land_annual_emissons_lifetime'] = convert_sr_float(sr_tab.cell(row + 137, co("E")).value)
+            s['tch4_co2_rplu_rate'] = xls(sr_tab, row + 136, co("H"))
+            s['land_annual_emissons_lifetime'] = convert_sr_float(sr_tab, row + 137, co("E"))
 
-            assert sr_tab.cell(row + 109, co("B")).value == 'Grid Emissions'
-            s['conv_annual_energy_used'] = convert_sr_float(sr_tab.cell(row + 110, co("E")).value)
-            s['soln_annual_energy_used'] = convert_sr_float(sr_tab.cell(row + 112, co("E")).value)
+            assert xls(sr_tab, row + 109, co("B")) == 'Grid Emissions'
+            s['conv_annual_energy_used'] = convert_sr_float(sr_tab, row + 110, co("E"))
+            s['soln_annual_energy_used'] = convert_sr_float(sr_tab, row + 112, co("E"))
 
-            assert sr_tab.cell(row + 168, co("B")).value == 'Carbon Sequestration and Land Inputs'
-            if sr_tab.cell(row + 169, co("E")).value == "":
+            assert xls(sr_tab, row + 168, co("B")) == 'Carbon Sequestration and Land Inputs'
+            if xls(sr_tab, row + 169, co("E")) == "":
                 # Excel checks whether this cell == "" to trigger different handling. The best equivalent
                 # in Python is to set it to NaN. We can distinguish None (not set) from NaN, and if
                 # the value is ever inadvertantly used it will result in NaN.
@@ -442,48 +492,46 @@ def get_land_scenarios(wb, solution_category):
                 # avg/high/low for the Thermal Moisture Regimes so we extract value from ScenarioRecord.
                 if tmr6:
                     s['seq_rate_per_regime'] = {
-                        'Tropical-Humid': convert_sr_float(sr_tab.cell(row + 170, co("E")).value),
-                        'Temperate/Boreal-Humid': convert_sr_float(sr_tab.cell(row + 171, co("E")).value),
-                        'Tropical-Semi-Arid': convert_sr_float(sr_tab.cell(row + 172, co("E")).value),
-                        'Temperate/Boreal-Semi-Arid': convert_sr_float(sr_tab.cell(row + 173, co("E")).value),
-                        'Global Arid': convert_sr_float(sr_tab.cell(row + 174, 7).value),
+                        'Tropical-Humid': convert_sr_float(sr_tab, row + 170, co("E")),
+                        'Temperate/Boreal-Humid': convert_sr_float(sr_tab, row + 171, co("E")),
+                        'Tropical-Semi-Arid': convert_sr_float(sr_tab, row + 172, co("E")),
+                        'Temperate/Boreal-Semi-Arid': convert_sr_float(sr_tab, row + 173, co("E")),
+                        'Global Arid': convert_sr_float(sr_tab, row + 174, 7),
                         'Global Arctic': 0.0}
                 if tmr8:
                     s['seq_rate_per_regime'] = {
-                        'Tropical-Humid': convert_sr_float(sr_tab.cell(row + 170, co("E")).value),
-                        'Temperate-Humid': convert_sr_float(sr_tab.cell(row + 171, co("E")).value),
-                        'Boreal-Humid': convert_sr_float(sr_tab.cell(row + 171, co("E")).value),
-                        'Tropical-Semi-Arid': convert_sr_float(sr_tab.cell(row + 172, co("E")).value),
-                        'Temperate-Semi-Arid': convert_sr_float(sr_tab.cell(row + 173, co("E")).value),
-                        'Boreal-Semi-Arid': convert_sr_float(sr_tab.cell(row + 173, co("E")).value),
-                        'Global Arid': convert_sr_float(sr_tab.cell(row + 174, 7).value),
+                        'Tropical-Humid': convert_sr_float(sr_tab, row + 170, co("E")),
+                        'Temperate-Humid': convert_sr_float(sr_tab, row + 171, co("E")),
+                        'Boreal-Humid': convert_sr_float(sr_tab, row + 171, co("E")),
+                        'Tropical-Semi-Arid': convert_sr_float(sr_tab, row + 172, co("E")),
+                        'Temperate-Semi-Arid': convert_sr_float(sr_tab, row + 173, co("E")),
+                        'Boreal-Semi-Arid': convert_sr_float(sr_tab, row + 173, co("E")),
+                        'Global Arid': convert_sr_float(sr_tab, row + 174, 7),
                         'Global Arctic': 0.0}
             else:
                 s['seq_rate_global'] = link_vma(sr_tab, row + 169, co("E"))
-            if sr_tab.cell(row + 175, co("D")).value == 'Growth Rate of Land Degradation':
-                s['global_multi_for_regrowth'] = convert_sr_float(sr_tab.cell(row + 178, co("E")).value)
+            
+            
+            if xls(sr_tab, row + 175, co("D")) == 'Growth Rate of Land Degradation':
+                s['global_multi_for_regrowth'] = convert_sr_float(sr_tab, row + 178, co("E"))
                 s['degradation_rate'] = link_vma(sr_tab, row + 175, co("E"))
                 s['tC_storage_in_protected_land_type'] = link_vma(sr_tab, row + 177, co("E"))
-            elif sr_tab.cell(row + 175,
-                                   co("D")).value == 'Sequestered Carbon NOT Emitted after Cyclical Harvesting/Clearing':
+            elif xls(sr_tab, row + 175, co("D")) == 'Sequestered Carbon NOT Emitted after Cyclical Harvesting/Clearing':
                 s['carbon_not_emitted_after_harvesting'] = link_vma(sr_tab, row + 175, co("E"))
 
             s['disturbance_rate'] = link_vma(sr_tab, row + 176, co("E"))
 
-            assert sr_tab.cell(row + 188, co("B")).value == 'General Land Inputs'
-            if sr_tab.cell(row + 189, co("D")).value == 'Delay Impact of Protection by 1 Year? (Leakage)':
-                s['delay_protection_1yr'] = convert_bool(sr_tab.cell(row + 189, co("E")).value)
-                s['delay_regrowth_1yr'] = convert_bool(sr_tab.cell(row + 190, co("E")).value)
-                s['include_unprotected_land_in_regrowth_calcs'] = convert_bool(
-                    sr_tab.cell(row + 191, co("E")).value)
-            elif sr_tab.cell(row + 189, co("D")).value == 'New Growth is Harvested/Cleared Every':
-                s['harvest_frequency'] = convert_sr_float(sr_tab.cell(row + 189, co("E")).value)
+            assert xls(sr_tab, row + 188, co("B")) == 'General Land Inputs'
+            if xls(sr_tab, row + 189, co("D")) == 'Delay Impact of Protection by 1 Year? (Leakage)':
+                s['delay_protection_1yr'] = convert_bool(xls(sr_tab, row + 189, co("E")))
+                s['delay_regrowth_1yr'] = convert_bool(xls(sr_tab, row + 190, co("E")))
+                s['include_unprotected_land_in_regrowth_calcs'] = convert_bool(xls(sr_tab, row + 191, co("E")))
+            elif xls(sr_tab, row + 189, co("D")) == 'New Growth is Harvested/Cleared Every':
+                s['harvest_frequency'] = convert_sr_float(sr_tab, row + 189, co("E"))
 
             for addl in range(271, 285):
-                label = 'Avoided Deforested Area With Increase in Agricultural Intensification'
-                if sr_tab.cell(row + addl, 3).value == label:
-                    s['avoided_deforest_with_intensification'] = convert_sr_float(
-                            sr_tab.cell(row + addl, co("E")).value)
+                if xls(sr_tab, row + addl, co("D")) == 'Avoided Deforested Area With Increase in Agricultural Intensification':
+                    s['avoided_deforest_with_intensification'] = convert_sr_float(sr_tab.cell(row + addl, co("E")).value)
             scenarios[scenario_name] = s
     return scenarios
 
@@ -515,50 +563,6 @@ def write_scenario(filename, s):
 
 
 
-
-# Ugh, ugh, ugh.  Mixing 0- and 1- indexing.
-
-def xls(tab, row, col):
-    """Return a quoted string read from tab(row, col)."""
-    cell = tab.cell(row+1, col+1)
-    if cell.data_type in ['e','n']: # error or empty
-        return ''
-    if cell.data_type in ['s', 'f']: # string or number
-        return "'" + str(cell.value).strip() + "'"
-    raise ValueError(
-        "Unhandled cell ctype: " + str(cell.data_type) + " at r=" + str(row) + " c=" + str(col))
-
-
-def xln(tab, row, col):
-    """Return the string of a floating point number read from tab(row, col)."""
-    cell = tab.cell(row+1, col+1)
-    if cell.data_type == 'e':
-        return 'np.nan'
-    if cell.data_type == 'f':
-        return str(cell.value)
-    if cell.data_type == 'n':
-        return '0.0'
-    if cell.data_type == 's' and cell.value == '':
-        return '0.0'
-    raise ValueError(
-        "Unhandled cell ctype: " + str(cell.data_type) + " at r=" + str(row) + " c=" + str(col))
-
-
-
-def xli(tab, row, col):
-    """Return the string of an integer value read from tab(row, col)."""
-    cell = tab.cell(row+1, col+1)
-    if cell.data_type == 'e':
-        return 'np.nan'
-    if cell.data_type == 's' or cell.data_type == 'f':
-        return str(int(cell.value))
-    if cell.data_type == 'n':
-        return '0'
-    raise ValueError(
-        "Unhandled cell ctype: " + str(cell.data_type) + " at r=" + str(row) + " c=" + str(col))
-
-
-
 def recursive_keys(sources):
     result = {}
     for k in sources.keys():
@@ -568,7 +572,6 @@ def recursive_keys(sources):
             value = None
         result[k] = value
     return result
-
 
 
 def abandon_files(sources, outputdir):
@@ -593,48 +596,44 @@ def write_tam(f, wb, outputdir):
          wb - an Excel workbook as returned by openpyxl
          outputdir: name of directory to write CSV files to.
     """
+
     tm_tab = wb['TAM Data']
-    f.write("        tamconfig_list = [\n")
-    f.write("            ['param', 'World', 'PDS World', 'OECD90', 'Eastern Europe', 'Asia (Sans Japan)',\n")
-    f.write("                'Middle East and Africa', 'Latin America', 'China', 'India', 'EU', 'USA'],\n")
-    f.write("            ['source_until_2014', self.ac.source_until_2014, self.ac.source_until_2014,\n")
-    f.write("                " + xls(tm_tab, 15, 21) + ", " + xls(tm_tab, 18, 21) + ", " + 
-            xls(tm_tab, 21, 21) + ", ")
-    f.write(xls(tm_tab, 24, 21) + ", " + xls(tm_tab, 27, 21) + ", " + xls(tm_tab, 30, 21) + ",\n")
-    f.write("                " + xls(tm_tab, 33, 21) + ", " + xls(tm_tab, 36, 21) + ", " +
-            xls(tm_tab, 39, 21) + "],\n")
-    f.write("            ['source_after_2014', self.ac.ref_source_post_2014, self.ac.pds_source_post_2014,\n")
-    f.write("                " + xls(tm_tab, 15, 21) + ", " + xls(tm_tab, 18, 21) + ", " +
-            xls(tm_tab, 21, 21) + ", ")
-    f.write(xls(tm_tab, 24, 21) + ", " + xls(tm_tab, 27, 21) + ", " + xls(tm_tab, 30, 21) + ",\n")
-    f.write("                " + xls(tm_tab, 33, 21) + ", " + xls(tm_tab, 36, 21) + ", " +
-            xls(tm_tab, 39, 21) + "],\n")
+    f.write( "        tamconfig_list = [\n")
+    f.write( "            ['param', 'World', 'PDS World', 'OECD90', 'Eastern Europe', 'Asia (Sans Japan)',\n")
+    f.write( "                'Middle East and Africa', 'Latin America', 'China', 'India', 'EU', 'USA'],\n")
+ 
+    f.write( "            ['source_until_2014', self.ac.source_until_2014, self.ac.source_until_2014,\n")
+    f.write(f"                '{xls(tm_tab, 'V16')}', '{xls(tm_tab, 'V19')}', '{xls(tm_tab, 'V22')}', '{xls(tm_tab, 'V25')}',")
+    f.write(f" '{xls(tm_tab, 'V28')}', '{xls(tm_tab, 'V31')}',\n")
+    f.write(f"                '{xls(tm_tab, 'V34')}', '{xls(tm_tab, 'V37')}', '{xls(tm_tab, 'V40')}' ],\n")
+
+    f.write( "            ['source_after_2014', self.ac.ref_source_post_2014, self.ac.pds_source_post_2014,\n")
+    f.write(f"                '{xls(tm_tab, 'V16')}', '{xls(tm_tab, 'V19')}', '{xls(tm_tab, 'V22')}', '{xls(tm_tab, 'V25')}',")
+    f.write(f" '{xls(tm_tab, 'V28')}', '{xls(tm_tab, 'V31')}',\n")
+    f.write(f"                '{xls(tm_tab, 'V34')}', '{xls(tm_tab, 'V37')}', '{xls(tm_tab, 'V40')}' ],\n")
+
     # One might assume PDS_World for trend and growth would use self.ac.soln_pds_adoption_prognostication_*,
     # but that is not what the TAM Data in Excel does. EA104 references B19 and C19, the World trend and growth.
-    f.write("            ['trend', " + xls(tm_tab, 18, 1) + ", " + xls(tm_tab, 18, 1) + ",\n")
-    f.write("                " + xls(tm_tab, 16, 11) + ", " + xls(tm_tab, 19, 11) + ", " +
-            xls(tm_tab, 22, 11) + ", ")
-    f.write(xls(tm_tab, 25, 11) + ", " + xls(tm_tab, 28, 11) + ", " + xls(tm_tab, 31, 11) + ",\n")
-    f.write("                " + xls(tm_tab, 34, 11) + ", " + xls(tm_tab, 37, 11) + ", " +
-            xls(tm_tab, 40, 11) + "],\n")
-    f.write("            ['growth', " + xls(tm_tab, 18, 2) + ", " + xls(tm_tab, 18, 2) + ", " +
-            xls(tm_tab, 16, 12) + ", ")
-    f.write(xls(tm_tab, 19, 12) + ",\n")
-    f.write("                " + xls(tm_tab, 22, 12) + ", " + xls(tm_tab, 25, 12) + ", " +
-            xls(tm_tab, 28, 12) + ", ")
-    f.write(xls(tm_tab, 31, 12) + ", " + xls(tm_tab, 34, 12) + ", " + xls(tm_tab, 37, 12) + ", ")
-    f.write(xls(tm_tab, 40, 12) + "],\n")
-    f.write("            ['low_sd_mult', " + xln(tm_tab, 24, 1) + ", " + xln(tm_tab, 24, 1) + ", ")
-    f.write(xln(tm_tab, 16, 16) + ", " + xln(tm_tab, 19, 16) + ", " + xln(tm_tab, 22, 16) + ", ")
-    f.write(xln(tm_tab, 25, 16) + ", " + xln(tm_tab, 28, 16) + ", " + xln(tm_tab, 31, 16) + ", ")
-    f.write(xln(tm_tab, 34, 16) + ", " + xln(tm_tab, 37, 16) + ", " + xln(tm_tab, 40, 16) + "],\n")
-    f.write("            ['high_sd_mult', " + xln(tm_tab, 23, 1) + ", " + xln(tm_tab, 23, 1) + ", ")
-    f.write(xln(tm_tab, 15, 16) + ", " + xln(tm_tab, 18, 16) + ", " + xln(tm_tab, 21, 16) + ", ")
-    f.write(xln(tm_tab, 24, 16) + ", " + xln(tm_tab, 27, 16) + ", " + xln(tm_tab, 30, 16) + ", ")
-    f.write(xln(tm_tab, 33, 16) + ", " + xln(tm_tab, 36, 16) + ", " + xln(tm_tab, 39, 16) + "]]\n")
-    f.write("        tamconfig = pd.DataFrame(tamconfig_list[1:], columns=tamconfig_list[0],\n")
-    f.write("            dtype=np.object).set_index('param')\n")
 
+    # Denise 7/21.  Per Chad, are no regional variations in these TAM settings, so I'm going to simplify this code a little bit.
+    # This will become wrong if we ever are parsing excel that *does* have regional TAM variations.
+    val = "'" + xls(tm_tab, 'B19') + "'"
+    f.write(f"            ['trend', {val}, {val}, {val}, {val}, {val},\n")
+    f.write(f"              {val}, {val}, {val}, {val}, {val}, {val}],\n")
+
+    val = "'" + xls(tm_tab, 'C19') + "'"
+    f.write(f"            ['growth', {val}, {val}, {val}, {val}, {val},\n")
+    f.write(f"              {val}, {val}, {val}, {val}, {val}, {val}],\n")   
+
+    val = xls(tm_tab, 'B25')
+    f.write(f"            ['low_sd_mult', {val}, {val}, {val}, {val}, {val}, {val}, {val}, {val}, {val}, {val}, {val}],\n")
+
+    val = xls(tm_tab, 'B24')
+    f.write(f"            ['high_sd_mult', {val}, {val}, {val}, {val}, {val}, {val}, {val}, {val}, {val}, {val}, {val}]]\n")
+
+    f.write("        tamconfig = pd.DataFrame(tamconfig_list[1:], columns=tamconfig_list[0]).set_index('param')\n")
+
+    # See extract_xource_data for the definition of these line numbers
     tam_regions = {'World': 44, 'OECD90': 162, 'Eastern Europe': 226,
                    'Asia (Sans Japan)': 289, 'Middle East and Africa': 352, 'Latin America': 415,
                    'China': 478, 'India': 542, 'EU': 606, 'USA': 671}
@@ -654,13 +653,11 @@ def write_tam(f, wb, outputdir):
             f.write("              '" + region + "': {\n")
             for (case, sources) in cases.items():
                 if isinstance(sources, str):
-                    f.write("                  '" + case + "': THISDIR.joinpath('tam', '" +
-                            sources + "'),\n")
+                    f.write("                  '" + case + "': THISDIR.joinpath('tam', '" + sources + "'),\n")
                 else:
                     f.write("                  '" + case + "': {\n")
                     for (source, filename) in sources.items():
-                        f.write("                  '" + source + "': THISDIR.joinpath('tam', '" +
-                                filename + "'),\n")
+                        f.write("                  '" + source + "': THISDIR.joinpath('tam', '" + filename + "'),\n")
                     f.write("              },\n")
             f.write("            },\n")
         f.write("        }\n")
@@ -687,19 +684,17 @@ def write_tam(f, wb, outputdir):
             f.write("            '" + region + "': {\n")
             for (case, sources) in cases.items():
                 if isinstance(sources, str):
-                    f.write("                    '" + case + "': THISDIR.joinpath('tam', '" + 
-                            sources + "'),\n")
+                    f.write("                    '" + case + "': THISDIR.joinpath('tam', '" + sources + "'),\n")
                 else:
                     f.write("                    '" + case + "': {\n")
                     for (source, filename) in sources.items():
-                        f.write("                      '" + source + "': THISDIR.joinpath('tam', '"
-                                + filename + "'),\n")
+                        f.write("                      '" + source + "': THISDIR.joinpath('tam', '" + filename + "'),\n")
                     f.write("              },\n")
             f.write("            },\n")
         f.write("        }\n")
         arg_pds = 'tam_pds_data_sources'
 
-    regional = convert_bool(tm_tab.cell(*cell_to_offsets('B29')).value) and convert_bool(tm_tab.cell(*cell_to_offsets('B30')).value)
+    regional = convert_bool(xls(tm_tab, 'B29')) and convert_bool(xls(tm_tab, 'B30'))
     f.write("        self.tm = tam.TAM(tamconfig=tamconfig, tam_ref_data_sources=" + arg_ref + ",\n")
     if regional:
         f.write("            main_includes_regional=True,\n")
@@ -858,7 +853,7 @@ def get_filename_for_source(sourcename, prefix=''):
 
 def write_aez(f, wb):
     a = wb['Land Allocation - Max TLA']
-    first_solution = str(a.cell(*cell_to_offsets('B18')).value)
+    first_solution = xls(a, 'B18')
     if first_solution == 'Peatland Protection':
         f.write("        self.ae = aez.AEZ(solution_name=self.name, cohort=2020,\n")
         f.write("                regimes=dd.THERMAL_MOISTURE_REGIMES8)\n")
@@ -875,40 +870,43 @@ def write_ad(f, wb, outputdir):
          wb - an Excel workbook as returned by xlrd
          outputdir: name of directory to write CSV files to.
     """
+    def q(s): 
+        return "'" + s + "'"
+
     a = wb['Adoption Data']
     f.write("        adconfig_list = [\n")
     f.write("            ['param', 'World', 'OECD90', 'Eastern Europe', 'Asia (Sans Japan)',\n")
     f.write("             'Middle East and Africa', 'Latin America', 'China', 'India', 'EU', 'USA'],\n")
     f.write("            ['trend', self.ac.soln_pds_adoption_prognostication_trend, ")
-    f.write(xls(a, 16, 11) + ",\n")
-    f.write("             " + xls(a, 19, 11) + ", " + xls(a, 22, 11) + ", ")
-    f.write(xls(a, 25, 11) + ", " + xls(a, 28, 11) + ", ")
-    f.write(xls(a, 31, 11) + ",\n")
-    f.write("             " + xls(a, 34, 11) + ", " + xls(a, 37, 11) + ", ")
-    f.write(xls(a, 40, 11) + "],\n")
+    f.write(q(xls(a, 'L17')) + ",\n")
+    f.write("             " + q(xls(a, 'L20')) + ", " + q(xls(a, 'L23')) + ", ")
+    f.write(q(xls(a, 'L26')) + ", " + q(xls(a, 'L29')) + ", ")
+    f.write(q(xls(a, 'L32')) + ",\n")
+    f.write("             " + q(xls(a, 'L35')) + ", " + q(xls(a, 'L38')) + ", ")
+    f.write(q(xls(a, 'L41')) + "],\n")
     f.write("            ['growth', self.ac.soln_pds_adoption_prognostication_growth, ")
-    f.write(xls(a, 16, 12) + ",\n")
-    f.write("             " + xls(a, 19, 12) + ", " + xls(a, 22, 12) + ", " + xls(a, 25, 12) + ", ")
-    f.write(xls(a, 28, 12) + ", " + xls(a, 31, 12) + ",\n")
-    f.write("             " + xls(a, 34, 12) + ", " + xls(a, 37, 12) + ", " + xls(a, 40, 12) + "],\n")
-    f.write("            ['low_sd_mult', " + xln(a, 24, 1) + ", ")
-    if xls(a, 16, 17) == 'S.D.':
-        f.write(xln(a, 16, 16) + ", " + xln(a, 19, 16) + ", " + xln(a, 22, 16) + ", ")
-        f.write(xln(a, 25, 16) + ", " + xln(a, 28, 16) + ", " + xln(a, 31, 16) + ", ")
-        f.write(xln(a, 34, 16) + ", " + xln(a, 37, 16) + ", " + xln(a, 40, 16) + "],\n")
+    f.write(q(xls(a, 'M17')) + ",\n")
+    f.write("             " + q(xls(a, 'M20')) + ", " + q(xls(a, 'M23')) + ", " + q(xls(a, 'M26')) + ", ")
+    f.write(q(xls(a, 'M29')) + ", " + q(xls(a, 'M32')) + ",\n")
+    f.write("             " + q(xls(a, 'M35')) + ", " + q(xls(a, 'M38')) + ", " + q(xls(a, 'M41')) + "],\n")
+    f.write("            ['low_sd_mult', " + xls(a, 'B25') + ", ")
+    
+    if xls(a, 'R17') == 'S.D.':
+        f.write(xls(a, 'Q17') + ", " + xls(a, 'Q20') + ", " + xls(a, 'Q23') + ", ")
+        f.write(xls(a, 'Q26') + ", " + xls(a, 'Q29') + ", " + xls(a, 'Q32') + ", ")
+        f.write(xls(a, 'Q35') + ", " + xls(a, 'Q38') + ", " + xls(a, 'Q41') + "],\n")
     else:
-        sd = xln(a, 24, 1)
+        sd = xls(a, 'B25')
         f.write(f"{sd}, {sd}, {sd}, {sd}, {sd}, {sd}, {sd}, {sd}, {sd}],\n")
-    f.write("            ['high_sd_mult', " + xln(a, 23, 1) + ", ")
-    if xls(a, 15, 17) == 'S.D.':
-        f.write(xln(a, 15, 16) + ", " + xln(a, 18, 16) + ", " + xln(a, 21, 16) + ", ")
-        f.write(xln(a, 24, 16) + ", " + xln(a, 27, 16) + ", " + xln(a, 30, 16) + ", ")
-        f.write(xln(a, 33, 16) + ", " + xln(a, 36, 16) + ", " + xln(a, 39, 16) + "]]\n")
+    f.write("            ['high_sd_mult', " + xls(a, 'B24') + ", ")
+    if xls(a, 'R16') == 'S.D.':
+        f.write(xls(a, 'Q16') + ", " + xls(a, 'Q19') + ", " + xls(a, 'Q22') + ", ")
+        f.write(xls(a, 'Q25') + ", " + xls(a, 'Q28') + ", " + xls(a, 'Q31') + ", ")
+        f.write(xls(a, 'Q34') + ", " + xls(a, 'Q37') + ", " + xls(a, 'Q40') + "]]\n")
     else:
-        sd = xln(a, 23, 1)
+        sd = xls(a, 'B24')
         f.write(f"{sd}, {sd}, {sd}, {sd}, {sd}, {sd}, {sd}, {sd}, {sd}]]\n")
-    f.write("        adconfig = pd.DataFrame(adconfig_list[1:], columns=adconfig_list[0],\n")
-    f.write("            dtype=np.object).set_index('param')\n")
+    f.write("        adconfig = pd.DataFrame(adconfig_list[1:], columns=adconfig_list[0]).set_index('param')\n")
     ad_regions = find_ad_regions(wb=wb)
     ad_outputdir = os.path.join(outputdir, 'ad')
     os.makedirs(ad_outputdir, exist_ok=True)
@@ -928,7 +926,7 @@ def write_ad(f, wb, outputdir):
         f.write("            },\n")
     f.write("        }\n")
     f.write("        self.ad = adoptiondata.AdoptionData(ac=self.ac, data_sources=ad_data_sources,\n")
-    regional = convert_bool(a.cell(*cell_to_offsets('B30')).value) and convert_bool(a.cell(*cell_to_offsets('B31')).value)
+    regional = convert_bool(xls(a, 'B30')) and convert_bool(xls(a, 'B31'))
     if regional:
         f.write("            main_includes_regional=True,\n")
     f.write("            adconfig=adconfig)\n")
@@ -959,14 +957,15 @@ def write_custom_ad(case, f, wb, outputdir, is_land):
     f.write(f"        ca_{case.lower()}_data_sources = [\n")
 
     for s in scenarios:
-        f.write(f"            {{'name': '{s['name'].strip()}', 'include': {str(s['include'])},\n")
+        f.write(f"            {{'name': '{s['name'].strip()}',\n")
+        f.write(f"              'include': {str(s['include'])},\n")
         description = s['description'].replace("'", "")
-        lines = textwrap.wrap(s['description'], width=75)
-        f.write(f"                'description': (\n")
+        lines = textwrap.wrap(description, width=75)
+        f.write(f"              'description': (\n")
         for line in lines:
             f.write(f"                    '{line} '\n")
         f.write(f"                    ),\n")
-        f.write(f"                'filename': THISDIR.joinpath('ca_{case.lower()}_data', '{s['filename']}')}},\n")
+        f.write(f"              'filename': THISDIR.joinpath('ca_{case.lower()}_data', '{s['filename']}')}},\n")
     f.write("        ]\n")
 
     if case == 'REF':
@@ -998,16 +997,16 @@ def write_s_curve_ad(f, wb):
     s = wb['S-Curve Adoption']
     #u = wb['Unit Adoption Calculations']
     f.write("        sconfig_list = [['region', 'base_year', 'last_year'],\n")
-    f.write("            ['World', " + xli(s, 16, 1) + ", " + xli(s, 19, 1) + "],\n")
-    f.write("            ['OECD90', " + xli(s, 16, 2) + ", " + xli(s, 19, 2) + "],\n")
-    f.write("            ['Eastern Europe', " + xli(s, 16, 3) + ", " + xli(s, 19, 3) + "],\n")
-    f.write("            ['Asia (Sans Japan)', " + xli(s, 16, 4) + ", " + xli(s, 19, 4) + "],\n")
-    f.write("            ['Middle East and Africa', " + xli(s, 16, 5) + ", " + xli(s, 19, 5) + "],\n")
-    f.write("            ['Latin America', " + xli(s, 16, 6) + ", " + xli(s, 19, 6) + "],\n")
-    f.write("            ['China', " + xli(s, 16, 7) + ", " + xli(s, 19, 7) + "],\n")
-    f.write("            ['India', " + xli(s, 16, 8) + ", " + xli(s, 19, 8) + "],\n")
-    f.write("            ['EU', " + xli(s, 16, 9) + ", " + xli(s, 19, 9) + "],\n")
-    f.write("            ['USA', " + xli(s, 16, 10) + ", " + xli(s, 19, 10) + "]]\n")
+    f.write("            ['World', " + xls(s, 'B17') + ", " + xls(s, 'B20') + "],\n")
+    f.write("            ['OECD90', " + xls(s, 'C17') + ", " + xls(s, 'C20') + "],\n")
+    f.write("            ['Eastern Europe', " + xls(s, 'D17') + ", " + xls(s, 'D20') + "],\n")
+    f.write("            ['Asia (Sans Japan)', " + xls(s, 'E17') + ", " + xls(s, 'E20') + "],\n")
+    f.write("            ['Middle East and Africa', " + xls(s, 'F17') + ", " + xls(s, 'F20') + "],\n")
+    f.write("            ['Latin America', " + xls(s, 'G17') + ", " + xls(s, 'G20') + "],\n")
+    f.write("            ['China', " + xls(s, 'H17') + ", " + xls(s, 'H20') + "],\n")
+    f.write("            ['India', " + xls(s, 'I17') + ", " + xls(s, 'I20') + "],\n")
+    f.write("            ['EU', " + xls(s, 'J17') + ", " + xls(s, 'J20') + "],\n")
+    f.write("            ['USA', " + xls(s, 'K17') + ", " + xls(s, 'K20') + "]]\n")
     f.write("        sconfig = pd.DataFrame(sconfig_list[1:], columns=sconfig_list[0], dtype=np.object).set_index('region')\n")
     f.write("        sconfig['pds_tam_2050'] = pds_tam_per_region.loc[[2050]].T\n")
     f.write("        sc_regions = list(self.ac.ref_base_adoption.keys())\n")
@@ -1022,7 +1021,7 @@ def write_s_curve_ad(f, wb):
     f.write("        if self.ac.pds_adoption_s_curve_imitation is not None:\n")
     f.write("          sc_regions, sc_percentages = zip(*self.ac.pds_adoption_s_curve_imitation)\n")
     f.write("          sconfig['imitation'] = pd.Series(list(sc_percentages), index=list(sc_regions))\n")
-    f.write("        self.sc = s_curve.SCurve(transition_period=" + xli(s, 14, 0) + ", sconfig=sconfig)\n")
+    f.write("        self.sc = s_curve.SCurve(transition_period=" + xls(s, 'A15') + ", sconfig=sconfig)\n")
     f.write("\n")
 
 
@@ -1037,8 +1036,8 @@ def write_ht(f, wb, has_custom_ref_ad, is_land):
     """
     h = wb['Helper Tables']
     a = wb['Advanced Controls']
-    initial_datapoint_year = int(h.cell(*cell_to_offsets('B21')).value)
-    final_datapoint_year = int(h.cell(*cell_to_offsets('B22')).value)
+    initial_datapoint_year = xli(h, 'B21')
+    final_datapoint_year = xli(h, 'B22')
 
     tam_or_tla = 'ref_tam_per_region' if not is_land else 'self.tla_per_region'
     f.write("        ht_ref_adoption_initial = pd.Series(\n")
@@ -1047,13 +1046,11 @@ def write_ht(f, wb, has_custom_ref_ad, is_land):
     f.write(f"        ht_ref_adoption_final = {tam_or_tla}.loc[{final_datapoint_year}] * (ht_ref_adoption_initial /\n")
     f.write(f"            {tam_or_tla}.loc[2014])\n")
     f.write("        ht_ref_datapoints = pd.DataFrame(columns=dd.REGIONS)\n")
-    f.write("        ht_ref_datapoints.loc[" + str(initial_datapoint_year) +
-            "] = ht_ref_adoption_initial\n")
-    f.write("        ht_ref_datapoints.loc[" + str(final_datapoint_year) +
-            "] = ht_ref_adoption_final.fillna(0.0)\n")
+    f.write("        ht_ref_datapoints.loc[" + str(initial_datapoint_year) + "] = ht_ref_adoption_initial\n")
+    f.write("        ht_ref_datapoints.loc[" + str(final_datapoint_year) + "] = ht_ref_adoption_final.fillna(0.0)\n")
 
-    initial_datapoint_year = int(h.cell(*cell_to_offsets('B85')).value)
-    final_datapoint_year = int(h.cell(*cell_to_offsets('B86')).value)
+    initial_datapoint_year = xli(h,'B85')
+    final_datapoint_year = xli(h, 'B86')
     tam_or_tla = 'pds_tam_per_region' if not is_land else 'self.tla_per_region'
     f.write("        ht_pds_adoption_initial = ht_ref_adoption_initial\n")
     f.write("        ht_pds_adoption_final_percentage = pd.Series(\n")
@@ -1064,21 +1061,21 @@ def write_ht(f, wb, has_custom_ref_ad, is_land):
     f.write("        ht_pds_datapoints.loc[" + str(initial_datapoint_year) + "] = ht_pds_adoption_initial\n")
     f.write("        ht_pds_datapoints.loc[" + str(final_datapoint_year) + "] = ht_pds_adoption_final.fillna(0.0)\n")
 
-    first_world_pds_datapoint = int(h.cell(*cell_to_offsets('C85')).value)
-    first_world_pds_yearly_result = int(h.cell(*cell_to_offsets('C91')).value)
+    first_world_pds_datapoint = xli(h, 'C85')
+    first_world_pds_yearly_result = xli(h, 'C91')
     use_first_pds_datapoint_main = (first_world_pds_datapoint == first_world_pds_yearly_result)
 
-    try:
-        adoption_base_year = int(a.cell(*cell_to_offsets('D60')).value)
-    except (ValueError, TypeError):
-        try:
-            adoption_base_year = int(a.cell(*cell_to_offsets('D58')).value)
-        except (ValueError,TypeError):
-            adoption_base_year = None
+    # sometimes the "actual" base year has been added above line 60; try that first.
+    adoption_base_year = xli(a, 'D59')
+    if adoption_base_year == 0:
+        # Denise 7/21.  The original code had 'D59' and 'D57', which doesn't make sense to me.
+        adoption_base_year = xli(a, 'D60')
+    if adoption_base_year == 0:
+        adoption_base_year = None
 
     copy_pds_to_ref = True
     for pds, ref in [('C91', 'C27'), ('C92', 'C28'), ('C93', 'C29'), ('C94', 'C30')]:
-        if int(h.cell(*cell_to_offsets(pds)).value) != int(h.cell(*cell_to_offsets(ref)).value):
+        if xli(h, pds) != xli(h, ref):
             copy_pds_to_ref = False
 
     f.write("        self.ht = helpertables.HelperTables(ac=self.ac,\n")
@@ -1102,7 +1099,7 @@ def write_ht(f, wb, has_custom_ref_ad, is_land):
 def write_ef(f, wb):
     """Write out the Emissions Factors module for this solution class."""
     ef_tab = wb['Emissions Factors']
-    grid_factor_2015 = float(ef_tab.cell(*cell_to_offsets('B291')).value)
+    grid_factor_2015 = xln(ef_tab, 'B291')
     if grid_factor_2015 == pytest.approx(0.619731238862595):
         f.write("        self.ef = emissionsfactors.ElectricityGenOnGrid(ac=self.ac, grid_emissions_version=4)\n")
     elif grid_factor_2015 == pytest.approx(0.617381627523255):
@@ -1128,8 +1125,8 @@ def write_ua(f, wb, is_rrs=True):
         f.write("            electricity_unit_factor=1000000.0,\n")
     f.write("            soln_ref_funits_adopted=self.ht.soln_ref_funits_adopted(),\n")
     f.write("            soln_pds_funits_adopted=self.ht.soln_pds_funits_adopted(),\n")
-    if 'Repeated First Cost to Maintaining Implementation Units' in ac_tab.cell(*cell_to_offsets('A43')).value:
-        repeated_cost_for_iunits = convert_bool(ac_tab.cell(*cell_to_offsets('C43')).value)
+    if 'Repeated First Cost to Maintaining Implementation Units' in xls(ac_tab, 'A43'):
+        repeated_cost_for_iunits = convert_bool(xls(ac_tab, 'C43'))
         f.write("            repeated_cost_for_iunits=" + str(repeated_cost_for_iunits) + ",\n")
     # If S135 == D135 (for all regions), then it must not be adding in 'Advanced Controls'!C62
     bug_cfunits_double_count = False
@@ -1147,24 +1144,23 @@ def write_ua(f, wb, is_rrs=True):
 def write_fc(f, wb):
     """Code generate the First Code module for this solution class."""
     fc_tab = wb['First Cost']
-    f.write("        self.fc = firstcost.FirstCost(ac=self.ac, pds_learning_increase_mult=" +
-            xli(fc_tab, 24, 2) + ",\n")
-    f.write("            ref_learning_increase_mult=" + xli(fc_tab, 24, 3) +
-            ", conv_learning_increase_mult=" + xli(fc_tab, 24, 4) + ",\n")
+    f.write("        self.fc = firstcost.FirstCost(ac=self.ac, pds_learning_increase_mult=" + xls(fc_tab, 'C25') + ",\n")
+    f.write("            ref_learning_increase_mult=" + xls(fc_tab, 'D25') +
+            ", conv_learning_increase_mult=" + xls(fc_tab, 'E25') + ",\n")
     f.write("            soln_pds_tot_iunits_reqd=soln_pds_tot_iunits_reqd,\n")
     f.write("            soln_ref_tot_iunits_reqd=soln_ref_tot_iunits_reqd,\n")
     f.write("            conv_ref_tot_iunits=conv_ref_tot_iunits,\n")
     f.write("            soln_pds_new_iunits_reqd=self.ua.soln_pds_new_iunits_reqd(),\n")
     f.write("            soln_ref_new_iunits_reqd=self.ua.soln_ref_new_iunits_reqd(),\n")
     f.write("            conv_ref_new_iunits=self.ua.conv_ref_new_iunits(),\n")
-    if fc_tab.cell(*cell_to_offsets('P36')).value == 'Implementation Units Installed Each Yr (CONVENTIONAL-REF)':
+    if xls(fc_tab, 'P36') == 'Implementation Units Installed Each Yr (CONVENTIONAL-REF)':
         f.write("            conv_ref_first_cost_uses_tot_units=True,\n")
-    if fc_tab.cell(*cell_to_offsets('F15')).value == 1000000000 and fc_tab.cell(*cell_to_offsets('G15')).value == '$/kW TO $/TW':
+    if xli(fc_tab, 'F15') == 1000000000 and xls(fc_tab, 'G15') == '$/kW TO $/TW':
         f.write("            fc_convert_iunit_factor=rrs.TERAWATT_TO_KILOWATT)\n")
-    elif fc_tab.cell(*cell_to_offsets('F16')).value == 1000000 and fc_tab.cell(*cell_to_offsets('F18')).value == 'million hectare':
+    elif xli(fc_tab, 'F16') == 1000000 and xls(fc_tab, 'F18') == 'million hectare':
         f.write("            fc_convert_iunit_factor=land.MHA_TO_HA)\n")
     else:
-        f.write("            fc_convert_iunit_factor=" + xln(fc_tab, 14, 5) + ")\n")
+        f.write("            fc_convert_iunit_factor=" + xls(fc_tab, 'F15') + ")\n")
     f.write('\n')
 
 
@@ -1179,18 +1175,18 @@ def write_oc(f, wb, is_land=False):
     f.write("            soln_pds_annual_world_first_cost=self.fc.soln_pds_annual_world_first_cost(),\n")
     f.write("            soln_ref_annual_world_first_cost=self.fc.soln_ref_annual_world_first_cost(),\n")
     f.write("            conv_ref_annual_world_first_cost=self.fc.conv_ref_annual_world_first_cost(),\n")
-    f.write("            single_iunit_purchase_year=" + xli(oc_tab, 120, 8) + ",\n")
+    f.write("            single_iunit_purchase_year=" + xls(oc_tab, 'I121') + ",\n")
     f.write("            soln_pds_install_cost_per_iunit=self.fc.soln_pds_install_cost_per_iunit(),\n")
     f.write("            conv_ref_install_cost_per_iunit=self.fc.conv_ref_install_cost_per_iunit(),\n")
 
-    units = oc_tab.cell(*cell_to_offsets('F13')).value
+    units = xls(oc_tab, 'F13')
     is_energy_units = (units == '$/kW TO $/TW' or units == 'From US$2014 per kW to US$2014 per TW')
-    conversion_factor_fom = oc_tab.cell(*cell_to_offsets('E13')).value
-    conversion_factor_vom = oc_tab.cell(*cell_to_offsets('E14')).value
+    conversion_factor_fom = xls(oc_tab,'E13')
+    conversion_factor_vom = xls(oc_tab,'E14')
 
-    if conversion_factor_fom == 1000000000 and is_energy_units:
+    if conversion_factor_fom == '1000000000' and is_energy_units:
         conversion_factor_fom = 'rrs.TERAWATT_TO_KILOWATT'
-    if conversion_factor_vom == 1000000000 and is_energy_units:
+    if conversion_factor_vom == '1000000000' and is_energy_units:
         conversion_factor_vom = 'rrs.TERAWATT_TO_KILOWATT'
     if is_land:
         conversion_factor_fom = conversion_factor_vom = 'land.MHA_TO_HA'
@@ -1199,10 +1195,10 @@ def write_oc(f, wb, is_land=False):
     # they differ (Heatpumps). operatingcost.py accomodates this, if passed a single number it will
     # use it for both factors.
     if conversion_factor_fom == conversion_factor_vom:
-        f.write("            conversion_factor=" + str(conversion_factor_fom) + ")\n")
+        f.write("            conversion_factor=" + conversion_factor_fom + ")\n")
     else:
-        f.write("            conversion_factor=(" + str(conversion_factor_fom) + ", " +
-                str(conversion_factor_vom) + "))\n")
+        f.write("            conversion_factor=(" + conversion_factor_fom + ", " +
+                conversion_factor_vom + "))\n")
     f.write('\n')
 
 
@@ -1273,6 +1269,8 @@ def data_sources_equivalent_for_region(region, world):
 
 
 def find_ad_regions(wb):
+    # There are several different layouts for adoption data in different spreadsheets.  See if one
+    # of the variants is detected.
     ad_default = {'World': 44, 'OECD90': 104, 'Eastern Europe': 168, 'Asia (Sans Japan)': 231,
                   'Middle East and Africa': 294, 'Latin America': 357, 'China': 420, 'India': 484,
                   'EU': 548, 'USA': 613}
@@ -1288,8 +1286,9 @@ def find_ad_regions(wb):
             if region == 'World':
                 continue
             found = False
-            for r in range(row - 10, row + 2):
-                if region.lower() in str(tab.cell(r, 1).value).lower():
+            # Look for the name in the 'A' column anywhere slightly above or slightly below
+            for r in range(row - 10, row+2):
+                if region.lower() in xls(tab, r, co("A")).lower():
                     found = True
                     break
             if not found:
@@ -1306,6 +1305,7 @@ def extract_source_data(wb, sheet_name, regions, outputdir, prefix):
          sheet_name: name of the Excel tab to go to, like 'Adoption Data' or 'TAM Data'
          regions: a dict of regions to extract and the line numbers they start at:
            { 'World': 44, 'OECD90': 104, 'Eastern Europe': 168 ...}
+           The starting line is the 1-based index of the line with the Baseline/Ambitious etc. header
          outputdir: name of directory to write CSV files to.
          prefix: prefix for filenames like 'ad_' or 'tam_'
 
@@ -1326,12 +1326,14 @@ def extract_source_data(wb, sheet_name, regions, outputdir, prefix):
        styling information like borders from xlsx/xlsm files (only the classic Excel file format).
     """
 
-    # Read the entire dataset for each region, across all sources.
+    # Read the entire dataset for each region, across all sources, starting at the sourcename row
     region_data = {}
-    for (region, skiprows) in regions.items():
-        usecols = find_source_data_columns(wb=wb, sheet_name=sheet_name, row=skiprows)
-        df = pd.read_excel(wb, engine='openpyxl', sheet_name=sheet_name, header=0,
-                           index_col=0, usecols=usecols, skiprows=skiprows, nrows=49)
+    for (region, baserow) in regions.items():
+        usecols = find_source_data_columns(wb=wb, sheet_name=sheet_name, row=baserow)
+        # Here we're reading the table starting at the sourcename header.  Since pd.read_excel
+        # wants offsets in 0-base, it works out to the same row number as the 1-based case-name header
+        df = pd.read_excel(wb, engine='openpyxl', sheet_name=sheet_name, header=baserow,
+                           index_col=0, usecols=usecols, nrows=49)
         df.name = region
         df.rename(columns=normalize_source_name, inplace=True)
         region_data[region] = df
@@ -1385,14 +1387,15 @@ def extract_source_data(wb, sheet_name, regions, outputdir, prefix):
 
     tmp_cases = {}
     tab = wb[sheet_name]
-    case_line = regions['World'] - 1
+    case_line = regions['World']
     for (region, line) in regions.items():
         case = ''
         for col in range(2, tab.max_column):
             if tab.cell(line+1, col).value == 'Functional Unit':
                 break
-            if tab.cell(case_line, col).data_type != 'n':
-                case = normalize_case_name(tab.cell(case_line, col).value)
+            case = xls(tab, case_line, col)
+            if case != '':
+                case = normalize_case_name(case)
             # it is important to get the source name from the regional_data.columns here, not re-read
             # the source_name from Excel, because some solutions like Composting have duplicate
             # column names and pd.read_excel automatically appends ".1" and ".2" to make them unique.
@@ -1433,24 +1436,30 @@ def extract_custom_adoption(wb, outputdir, sheet_name, prefix):
     custom_ad_tab = wb[sheet_name]
     defaultinclude = False if 'PDS' in sheet_name else True
 
-    assert custom_ad_tab.cell(*cell_to_offsets('AN25')).value == 'High'
-    multipliers = {'high': custom_ad_tab.cell(*cell_to_offsets('AO25')).value,
-                   'low': custom_ad_tab.cell(*cell_to_offsets('AO26')).value}
+    assert xls(custom_ad_tab, 'AN25') == 'High'
+    multipliers = {'high': xli(custom_ad_tab, 'AO25'),
+                   'low': xli(custom_ad_tab, 'AO26')}
     scenarios = []
-    for row in range(20, 36):
-        if not re.search(r"Scenario \d+", str(custom_ad_tab.cell(row, co("N")).value)):
+    # Look for the list of scenarios in the minitable in columns 'N:O'
+    for srow in range(20, 36):
+        if not re.search(r"Scenario \d+", xls(custom_ad_tab, srow, co("N"))):
             continue
-        name = normalize_source_name(str(custom_ad_tab.cell(row, co("O")).value))
-        includestr = str(custom_ad_tab.cell(row, co("S")).value)
+        name = normalize_source_name(xls(custom_ad_tab, srow, co("O")))
+        includestr = xls(custom_ad_tab, srow, co("S"))
         include = convert_bool(includestr) if includestr else defaultinclude
         filename = get_filename_for_source(name, prefix=prefix)
-        if not filename:
+        if not filename:   # This skips all the "[Type scenario name here]" lines
             continue
         skip = True
+        description = ''
+
+        # Now find the main table for this scenario
         for row in range(custom_ad_tab.min_row, custom_ad_tab.max_row):
-            if normalize_source_name(str(custom_ad_tab.cell(row, co("B")).value)) == name:
+            if normalize_source_name(xls(custom_ad_tab, row, co("B"))) == name:
+                # row points to 1-based top-level header, which is equiv to 0-based secondary header used by 
+                # pd.read_excel used below.  i.e. this read starts at the 2nd header.
                 df = pd.read_excel(wb, engine='openpyxl', sheet_name=sheet_name,
-                                   header=0, index_col=0, usecols="A:K", skiprows=row + 1, nrows=49)
+                                   header=row, index_col=0, usecols="A:K", nrows=49)
                 df.rename(mapper={'Middle East & Africa': 'Middle East and Africa',
                           'Asia (sans Japan)': 'Asia (Sans Japan)'},
                           axis='columns', inplace=True)
@@ -1458,7 +1467,8 @@ def extract_custom_adoption(wb, outputdir, sheet_name, prefix):
                     df.to_csv(os.path.join(outputdir, filename), index=True, header=True)
                     skip = False
                 for offset in range(0, 3):
-                    description = str(custom_ad_tab.cell(row + offset, co("N")).value)
+                    # looking for the big yellow box.
+                    description = xls(custom_ad_tab, row + offset, co("N"))
                     if description:
                         break
                 break
@@ -1475,12 +1485,12 @@ def extract_custom_tla(wb, outputdir):
          outputdir: directory where output files are written
     """
     tla_tab = wb['TLA Data']
-    title_cell = tla_tab.cell(*cell_to_offsets('A642')).value.strip()
+    title_cell = xls(tla_tab, 'A642')
     assert title_cell == 'Customized TLA Data', 'Title Cell: ' + title_cell
-    assert tla_tab.cell(*cell_to_offsets('B645')).value == 2012
+    assert xli(tla_tab, 'B645') == 2012
 
     df = pd.read_excel(wb, engine='openpyxl', sheet_name='TLA Data',
-                       header=0, index_col=0, usecols="B:L", skiprows=643, nrows=49)
+                       header=644, index_col=0, usecols="B:L", nrows=49)
     df.index.name = 'Year'
     df.index.astype(int)
     df = df.dropna(how='all', axis=1).dropna(how='all', axis=0)
@@ -1537,7 +1547,7 @@ def lookup_unit(tab, row, col):
         'Residential and Commercial roof area, m2': u'm\u00B2',
         'Residential and Commercial roof area,  m2': u'm\u00B2',
     }
-    name = str(tab.cell(row, col).value)
+    name = xls(tab, row, col)
     return unit_mapping.get(name, name)
 
 
@@ -1546,8 +1556,8 @@ def write_units_rrs(f, wb):
     sr_tab = wb['ScenarioRecord']
     f.write('units = {\n')
     for row in range(1, sr_tab.max_row):
-        col_d = sr_tab.cell(row, co("D")).value
-        col_e = sr_tab.cell(row, co("E")).value
+        col_d = xls(sr_tab, row, co("D"))
+        col_e = xls(sr_tab, row, co("E"))
         if col_d == 'Name of Scenario:' and 'TEMPLATE' not in col_e:
             f.write('    "implementation unit": "' + lookup_unit(sr_tab, row + 5, co("F")) + '",\n')
             f.write('    "functional unit": "' + lookup_unit(sr_tab, row + 7, co("F")) + '",\n')
@@ -1562,8 +1572,8 @@ def write_units_land(f, wb):
     sr_tab = wb['ScenarioRecord']
     f.write('units = {\n')
     for row in range(1, sr_tab.max_row):
-        col_d = sr_tab.cell(row, co("D")).value
-        col_e = sr_tab.cell(row, co("E")).value
+        col_d = xls(sr_tab, row, co("D"))
+        col_e = xls(sr_tab, row, co("E"))
         if col_d == 'Name of Scenario:' and 'TEMPLATE' not in col_e:
             f.write('    "implementation unit": None,\n')
             f.write('    "functional unit": "' + lookup_unit(sr_tab, row + 5, co("F")) + '",\n')
@@ -1578,11 +1588,17 @@ def find_RRS_solution_category(wb):
     ac_tab = wb['Advanced Controls']
     possible = [('A157', 'A159'), ('A142', 'A144')]
     for labelcell, valuecell in possible:
-        label = str(ac_tab.cell(*cell_to_offsets(labelcell)).value)
+        label = xls(ac_tab, labelcell)
         if 'Is this primarily a' in label:
-            return str(ac_tab.cell(*cell_to_offsets(valuecell)).value)
+            return xls(ac_tab, valuecell)
     return None
 
+
+
+
+warn_counts = {
+    'unknown_formula': 0
+}
 
 def output_solution_python_file(outputdir, xl_filename):
     """Extract relevant fields from Excel file and output a Python class.
@@ -1592,6 +1608,7 @@ def output_solution_python_file(outputdir, xl_filename):
          xl_filename: an Excel file to open, can be xls/xlsm/etc.
            Note that we cannot run Macros from xlsm files, only read values.
     """
+    warn_counts['unknown_formula'] = 0 # reset counter
     py_filename = '-' if outputdir is None else os.path.join(outputdir, '__init__.py')
     wb = openpyxl.load_workbook(filename=xl_filename,data_only=True,keep_links=False)
     ac_tab = wb['Advanced Controls']
@@ -1609,7 +1626,7 @@ def output_solution_python_file(outputdir, xl_filename):
 
     f = open(py_filename, 'w') if py_filename != '-' else sys.stdout
 
-    solution_name = ac_tab.cell(*cell_to_offsets('C40')).value  # 'Advanced Controls'!C40
+    solution_name = xls(ac_tab, 'C40')
     f.write('"""' + str(solution_name) + ' solution model.\n')
     f.write('   Excel filename: ' + os.path.basename(xl_filename) + '\n')
     f.write('"""\n')
@@ -1795,6 +1812,8 @@ def output_solution_python_file(outputdir, xl_filename):
         f.write("\n")
 
     f.close()
+    if warn_counts['unknown_formula'] > 0:
+        warnings.warn(f"Extraction encountered {warn_counts['unknown_formula']} unknown formulas in values on ScenarioRecord tab")
 
 
 def link_vma(tab, row, col):
@@ -1812,39 +1831,40 @@ def link_vma(tab, row, col):
     Returns:
       'mean', 'high' or 'low' or raw value if no formula in cell
     """
-    if tab.cell(row, col).data_type in ('n', 'e'):  # empty or error
-        return 0
 
-    cell_value = tab.cell(row, col).value
-    if not isinstance(cell_value, str) or 'Formula:=' not in cell_value:
-        return {'value': convert_sr_float(cell_value), 'statistic': ''}
+    cell_value = xls(tab, row, col)
+    if cell_value == '':
+        return 0.0
 
-    # 'Formula:=' *is* in cell_value
-    if True in [cell_value.endswith(x) for x in ['80', '95', '101', '116', '146', '161', '175', '189', '140']]:
-        return {'value': convert_sr_float(cell_value), 'statistic': 'mean'}
-    elif True in [cell_value.endswith(x) for x in ['81', '96', '102', '117', '147', '162', '176', '190', '141']]:
-        return {'value': convert_sr_float(cell_value), 'statistic': 'high'}
-    elif True in [cell_value.endswith(x) for x in ['82', '97', '103', '118', '148', '163', '177', '191', '142']]:
-        return {'value': convert_sr_float(cell_value), 'statistic': 'low'}
-    else:
-        formula = cell_value.split(':=')[1]
-        warnings.warn(f'formula "{formula}" in {col}:{str(row)} not recognised - using value')
-        return {'value': convert_sr_float(cell_value), 'xls cell formula': formula}
+    if 'Formula:=' not in cell_value:  # No formula present
+        return {'value': xln(tab, row, col), 'statistic': ''}
+    else: # formula is present
+        float_val = convert_sr_float(tab, row, col)
+
+        # detect the standard statistics by the row number they reference
+        if True in [cell_value.endswith(x) for x in ['80', '95', '101', '116', '146', '161', '175', '189', '140']]:
+            return {'value': float_val, 'statistic': 'mean'}
+        elif True in [cell_value.endswith(x) for x in ['81', '96', '102', '117', '147', '162', '176', '190', '141']]:
+            return {'value': float_val, 'statistic': 'high'}
+        elif True in [cell_value.endswith(x) for x in ['82', '97', '103', '118', '148', '163', '177', '191', '142']]:
+            return {'value': float_val, 'statistic': 'low'}
+        
+        else: # not a standard formula, pass along the entire expression
+            formula = cell_value.split(':=')[1]
+            # Denise 7/21 turned off this warning because we get it too often.
+            # Do a hack-y accumulator instead.
+            #warnings.warn(f'formula "{formula}" in {col}:{str(row)} not recognised - using value')
+            warn_counts['unknown_formula'] = warn_counts['unknown_formula'] + 1
+            return {'value': float_val, 'xls cell formula': formula}
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description='Create python Drawdown solution from Excel version.')
-    parser.add_argument('--excelfile', help='Excel filename to process')
-    parser.add_argument('--outputdir', default=None, required=True,
-                        help='Directory to write generated Python code to')
+    parser = argparse.ArgumentParser(description='Create python Drawdown solution from Excel version.')
+    parser.add_argument('excelfile', help='Excel filename to process.')
+    parser.add_argument('--outputdir', default=None, help='Directory to write generated code and files to.  Defaults to the same directory as excelfile.')
     args = parser.parse_args(sys.argv[1:])
-    outputdirpath = pathlib.Path(args.outputdir)
 
-    if args.excelfile is None:
-        files = list(glob.glob(str(outputdirpath.joinpath('testdata/[!~]*.xlsm'))))
-        if len(files) == 1:
-            args.excelfile = files[0]
-            print(f'Using excelfile: {str(args.excelfile)}')
+    excelfile = pathlib.Path(args.excelfile).resolve()
+    outputdir = pathlib.Path(args.outputdir) if args.outputdir else excelfile.parent
 
-    output_solution_python_file(outputdir=outputdirpath, xl_filename=args.excelfile)
+    output_solution_python_file(outputdir=str(outputdir), xl_filename=str(excelfile))

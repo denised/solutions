@@ -18,8 +18,8 @@ import numpy as np
 import pandas as pd
 import tools.util
 
-CSV_TEMPLATE_PATH = pathlib.Path(__file__).parents[1].joinpath('data', 'VMA', 'vma_template.csv')
-DATA_DIR_PATH = pathlib.Path(__file__).parents[1].joinpath('data')
+CSV_TEMPLATE_PATH = pathlib.Path(__file__).parents[2].joinpath('data', 'VMA', 'vma_template.csv')
+DATA_DIR_PATH = pathlib.Path(__file__).parents[2].joinpath('data')
 pd.set_option('display.expand_frame_repr', False)
 
 # A few VMA columns are only present in some solutions, for example specific to Land or Ocean solns.
@@ -330,7 +330,7 @@ class VMAReader:
             # Sometimes all weights are set to 0 instead of blank. Change them to be NaN.
             df['Weight'] = df['Weight'].replace(0, np.nan)
 
-        for r in range(last_row, last_row + 100):  # look past last row
+        for r in range(last_row, last_row + 100):  # look past last row in columns R and S
             if sheet.cell(row1 + r, 18).value == 'Use weight?':
                 use_weight = tools.util.convert_bool(sheet.cell(row1 + r + 1, 18).value)
                 break
@@ -417,7 +417,7 @@ class VMAReader:
 
         table_locations = collections.OrderedDict()
         sheet = self.wb[sheetname]
-        row, col = 41, 3
+        row, col = 41, 3  # column 'D'
         for table_num in range(1, 36):
             found = False
             for rows_to_next_table in range(200):

@@ -9,7 +9,7 @@ import pandas as pd
 import xlrd
 
 import model.dd
-from tools.vma_xls_extract import VMAReader
+from tools.extraction.vma_xls_extract import VMAReader
 
 
 VMA_columns = ['Value', 'Units', 'Raw', 'Weight', 'Exclude?', 'Region', 'Main Region', 'TMR']
