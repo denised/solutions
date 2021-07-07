@@ -2,18 +2,21 @@
 ' Used to create static results for testing python code
 
 
-Function Skip_Sheet(sht) As Boolean
-    ' Sheets that we don't need to save.
-    ' You may extend this per-solution with other sheets we don't need to test (such as historical sheets)
+Function Should_Export(sht) As Boolean
+    ' Sheets that we need to save, which are sheets that contain core calculations and outputs
+    ' that we might want to test.  If this is not a standard RSS/Land solution, you should
+    ' check that the list is appropriate
     Dim skip_sheets As Variant
-    skip_sheets = Array("Welcome", "Data Interpolator", "Regions-Countries sorting", "XLLang", _
-            "WORLD Land Data", "Land Allocation - Max TLA", "TLA Data", "Adoption Factoring", _
-            "ADD SHEETS -->", "Export Tracking")
-    
-    Skip_Sheet = False
-    For Each skippable In skip_sheets
-        If sht = skippable Then
-            Skip_Sheet = True
+    export_sheets = Array("Advanced Controls", "ScenarioRecord", "Variable Meta-Analysis", _
+                          "TAM Data", "TLA Data", "AEZ Data", _
+                          "Adoption Data", "Custom PDS Adoption", "Custom REF Adoption", "S-Curve Adoption", _
+                          "Helper Tables", "Unit Adoption Calculations", _
+                          "First Cost", "Operating Cost", "Net Profit Margin", _
+                          "Emissions Factors", "CO2 Calcs", "CH4 Calcs")
+    Should_Export = False
+    For Each keep In export_sheets
+        If sht = keep Then
+            Should_Export = True
             Exit Function
         End If
     Next
@@ -94,7 +97,7 @@ Sub Generate_Scenario_Records()
             
             ' Write out the sheets
             For Each x In Worksheets
-                If Skip_Sheet(x.Name) = False Then
+                If Should_Export(x.Name) Then
                     counter = counter + 1
                     fname = basename & "_" & counter & ".csv"
                     
