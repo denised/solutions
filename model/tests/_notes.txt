@@ -1,0 +1,4 @@
+
+Each and every solution in SOLUTION_DIR is tested independently, which results in effective code coverage of the common cases pretty well.
+So tests in this directory tend to focus more on error or unusual cases, or to provide a bit of focused testing on
+smaller parts that are more easily tested this way.

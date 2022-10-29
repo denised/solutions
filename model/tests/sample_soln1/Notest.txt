@@ -1,0 +1,5 @@
+1. Extra files (like this file) should cause no problems
+2. This solution has no tam source data directory, 
+3. The adoption source data directory is present, but has no yml files in it.
+4. Scenario_empty is literally an empty file.  It should be okay, and the resulting scenario should be exactly the reference scenario.
+5. The solution_info lists only a single pds scenario (pds1)

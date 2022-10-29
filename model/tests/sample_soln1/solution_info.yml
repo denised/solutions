@@ -1,0 +1,5 @@
+title: A generic test solution
+# No info field provided
+pds_scenarios: { PDS1: scenario_empty }  # Only pds1 scenario listed
+implementation_units: widgets
+functional_units: happy person-months
