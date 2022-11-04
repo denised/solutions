@@ -70,16 +70,23 @@ class ParameterSet:
                         self._meta[k] = v['meta']
                         v = v['value']
 
-                    # If the value is supposed to be a dataframe, reconstitute it.
-                    if fielddata[k].metadata.get('pdtype') and v is not None:
-                        v = pd.DataFrame.from_dict(v)
-                    
-                    # No further type or value checking done here; subclasses may add their own if they desire.
+                    # Per-parameter initialization; subclasses can customize/extend
+                    v = self._initialize_value(k,v,fielddata[k].metadata)
+
                     self[k] = v
                     self._set.add(k)
                     
                 else:
                     warnings.warn(f"{self.__class__.__name__} ignoring unknown parameter '{k}'")
+
+    def _initialize_value(self, param_name, raw_value, metadata):
+        """Hook for additional initialization of a parameter."""
+
+        # If the value is supposed to be a dataframe, reconstitute it.
+        if metadata.get('pdtype') and raw_value is not None:
+            return pd.DataFrame.from_dict(raw_value)
+        else:
+            return raw_value
 
 
     def _to_yaml_form(self, compact=True):

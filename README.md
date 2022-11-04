@@ -23,6 +23,7 @@ unless you are very familiar with the original code):
 * Unify Neil's Ocean solutions code with the prior existing (Denton/my) code.
 * Simplify the way(s) in which adoption is specified, separating the tools for generating adoption curves from the model's use of them.
 * Separate out the "reference scenario" as an explicit thing that is modeled. 
+* Switch from the mix of json, csv and xls data formats to yaml, with the idea of making things easier to read/edit by humans.
 
 
 ## Contributing, maybe?

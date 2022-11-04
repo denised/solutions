@@ -108,6 +108,9 @@ def zero_df_like(likedf: pd.DataFrame) -> pd.DataFrame:
     newdf[:] = 0.0
     return newdf
 
+def nan_df_like(likedf: pd.DataFrame) -> pd.DataFrame:
+    """Return a datafram the same dimension as `likedf`, filled with NaNs."""
+    return pd.DataFrame([math.nan]).reindex_like(likedf)
 
 """Statistics over a set of estimates for some quantity.  
 

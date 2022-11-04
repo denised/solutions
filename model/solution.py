@@ -106,6 +106,7 @@ class Solution:
 
     
     # These are loaded on demand only.
+    _ref_scenario: Any = None
     _adoption_data : Any = None
     _pmas : Any = None
     _scenario_descriptions : Dict[str,str] = None
@@ -136,6 +137,12 @@ class Solution:
             scenario_def = self._params_class(load_raw(path))
         # Create the Scenario object.  Scenario init does the rest of the work.
         return self._scenario_class(self, scenario_def)
+       
+    def reference_scenario(self):
+        """Return a scenario object for the reference, or baseline, case for this solution."""
+        if self._ref_scenario is None:
+            self._ref_scenario = self.load_scenario(self.reference_params)
+        return self._ref_scenario
     
     def resolve_scenario_name(self, scenario_name: str) -> Path:
         """`scenario_name` might be one of these categories:
